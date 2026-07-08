@@ -1,0 +1,5 @@
+# Build output
+/dist/
+*.exe
+# Generated Windows resource (produced by `go generate`)
+resource.syso

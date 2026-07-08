@@ -1,0 +1,40 @@
+{
+  "name": "bifrost-windows",
+  "sourceRoot": "apps/bifrost-windows",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "go build ./...",
+        "cwd": "apps/bifrost-windows"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "go test -race -cover ./...",
+        "cwd": "apps/bifrost-windows"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "go vet ./...",
+        "cwd": "apps/bifrost-windows"
+      }
+    },
+    "package": {
+      "executor": "nx:run-commands",
+      "description": "Build the signed-manifest release exe (tray app, no console window).",
+      "options": {
+        "commands": [
+          "go generate ./...",
+          "go build -ldflags \"-s -w -H=windowsgui\" -o dist/bifrost-vpn.exe ."
+        ],
+        "cwd": "apps/bifrost-windows",
+        "parallel": false
+      }
+    }
+  }
+}
