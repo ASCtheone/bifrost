@@ -165,6 +165,55 @@ pub struct IpPool {
     pub total_addresses: i64,
 }
 
+// ── User (local identity; replaces Cognito) ──────────────────────
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+    pub user_id: String,
+    pub username: String,
+    pub email: String,
+    pub display_name: String,
+    #[serde(skip_serializing)]
+    pub password_hash: String,
+    pub groups: Json<Vec<String>>,
+    pub enabled: bool,
+    pub status: String,
+    pub owner_email: String,
+    pub must_change: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Spark share (a node shared with another user) ────────────────
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SparkShare {
+    pub node_id: String,
+    pub shared_with_email: String,
+    pub shared_by_email: String,
+    pub created_at: String,
+}
+
+// ── Connection log (device connection event) ─────────────────────
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionLog {
+    pub device_id: String,
+    pub seq: String,
+    pub action: String,
+    pub connected_node_id: Option<String>,
+    pub connected_node_name: Option<String>,
+    pub source_ip: String,
+    pub location: Option<String>,
+    pub user_agent: String,
+    pub user_email: Option<String>,
+    pub timestamp: String,
+    pub expires_at: i64,
+}
+
 // ── System config (singleton) ────────────────────────────────────
 
 #[derive(Debug, Clone, FromRow, Serialize)]

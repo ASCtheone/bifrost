@@ -74,6 +74,13 @@ pub async fn update_peer(pool: &SqlitePool, peer_id: &str, u: UpdatePeer) -> App
     Ok(())
 }
 
+pub async fn query_all_peers(pool: &SqlitePool) -> AppResult<Vec<Peer>> {
+    let peers = sqlx::query_as::<_, Peer>("SELECT * FROM peers ORDER BY created_at")
+        .fetch_all(pool)
+        .await?;
+    Ok(peers)
+}
+
 pub async fn query_peers_by_server(pool: &SqlitePool, server_id: &str) -> AppResult<Vec<Peer>> {
     let ps = sqlx::query_as::<_, Peer>(
         "SELECT * FROM peers WHERE server_id = ? ORDER BY created_at",

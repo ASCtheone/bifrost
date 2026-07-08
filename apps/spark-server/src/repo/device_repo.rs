@@ -116,3 +116,28 @@ pub async fn update_device_unifi_peer_id(
     .await?;
     Ok(())
 }
+
+/// Reassign a device's owner (`""` unassigns). Super-admin only at the route.
+pub async fn set_device_owner(pool: &SqlitePool, device_id: &str, owner_email: &str) -> AppResult<()> {
+    sqlx::query("UPDATE devices SET owner_email = ?, updated_at = ? WHERE device_id = ?")
+        .bind(owner_email)
+        .bind(now_iso())
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Reset a device so the spark-agent re-creates its peer (status → pending,
+/// clears the UniFi peer id). Mirrors `sync-device`.
+pub async fn reset_for_resync(pool: &SqlitePool, device_id: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE devices SET status = 'pending', unifi_peer_id = NULL, updated_at = ? \
+         WHERE device_id = ?",
+    )
+    .bind(now_iso())
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

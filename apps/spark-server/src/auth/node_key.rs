@@ -1,3 +1,6 @@
+//! Node-key authentication for spark-agents (unchanged from the original port):
+//! validate the `X-Node-Key` header against the stored SHA-256 hash.
+
 use crate::error::{AppError, AppResult};
 use crate::repo::node_repo;
 use sha2::{Digest, Sha256};
@@ -9,7 +12,7 @@ pub struct NodeKeyContext {
 }
 
 /// Validate the `X-Node-Key` presented by a spark-agent against the stored
-/// SHA-256 hash. Constant-time comparison; mirrors the old `validateNodeKey`.
+/// SHA-256 hash. Constant-time comparison.
 pub async fn validate_node_key(
     pool: &SqlitePool,
     node_id: &str,

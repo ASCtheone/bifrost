@@ -1,7 +1,10 @@
 pub mod audit_repo;
 pub mod config_repo;
+pub mod conn_log_repo;
 pub mod device_repo;
 pub mod ip_pool_repo;
 pub mod node_repo;
 pub mod peer_repo;
+pub mod share_repo;
 pub mod system_config_repo;
+pub mod user_repo;

@@ -7,8 +7,20 @@ api_port = 8443
 database_url = "sqlite://data/bifrost.db"
 
 [auth]
-# "cognito" = verify Cognito-issued JWTs via JWKS (keeps managed login on AWS Cognito)
-# "local"   = self-hosted users + JWT issuance (zero AWS)  [not yet implemented]
-mode = "cognito"
-cognito_issuer = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX"
-cognito_audience = "your-user-pool-client-id"
+# Self-hosted local identity: users live in the local database and the server
+# issues/verifies its own HS256 JWTs. No AWS dependency.
+mode = "local"
+
+# HS256 signing secret. Keep this stable and secret in production — changing it
+# invalidates all issued tokens. If omitted, an ephemeral secret is generated at
+# startup (fine for dev; tokens won't survive a restart).
+# jwt_secret = "change-me-to-a-long-random-string"
+
+# Access-token lifetime in hours (default 720 = 30 days).
+token_ttl_hours = 720
+
+# First-run bootstrap: if the user store is empty on startup, create this
+# superadmin. Remove after the first successful boot, or leave (it's a no-op once
+# any user exists).
+# bootstrap_admin_email = "admin@example.com"
+# bootstrap_admin_password = "ChangeMe-Str0ngPass"

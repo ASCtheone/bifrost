@@ -198,6 +198,108 @@ pub async fn revoke_node_key(pool: &SqlitePool, node_id: &str) -> AppResult<()> 
     Ok(())
 }
 
+// ── Admin mutations ─────────────────────────────────────────────
+
+/// Fields an admin may patch on a node (each `Some` is applied). `owner` set to
+/// `Some(String)` reassigns ownership; `Some("")` unassigns.
+#[derive(Debug, Default)]
+pub struct NodePatch {
+    pub node_name: Option<String>,
+    pub controller_url: Option<String>,
+    pub controller_api_key: Option<String>,
+    pub tunnel_url: Option<String>,
+    pub tunnel_id: Option<String>,
+    pub priority: Option<i64>,
+    pub owner: Option<String>,
+}
+
+impl NodePatch {
+    pub fn is_empty(&self) -> bool {
+        self.node_name.is_none()
+            && self.controller_url.is_none()
+            && self.controller_api_key.is_none()
+            && self.tunnel_url.is_none()
+            && self.tunnel_id.is_none()
+            && self.priority.is_none()
+            && self.owner.is_none()
+    }
+}
+
+/// Apply a partial update to a node. Returns rows affected (0 if node absent).
+pub async fn patch_node(pool: &SqlitePool, node_id: &str, p: NodePatch) -> AppResult<u64> {
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new("UPDATE nodes SET updated_at = ");
+    qb.push_bind(now_iso());
+    if let Some(v) = p.node_name {
+        qb.push(", node_name = ").push_bind(v);
+    }
+    if let Some(v) = p.controller_url {
+        qb.push(", controller_url = ").push_bind(v);
+    }
+    if let Some(v) = p.controller_api_key {
+        qb.push(", controller_api_key = ").push_bind(v);
+    }
+    if let Some(v) = p.tunnel_url {
+        qb.push(", tunnel_url = ").push_bind(v);
+    }
+    if let Some(v) = p.tunnel_id {
+        qb.push(", tunnel_id = ").push_bind(v);
+    }
+    if let Some(v) = p.priority {
+        qb.push(", priority = ").push_bind(v);
+    }
+    if let Some(owner) = p.owner {
+        qb.push(", owner_id = ").push_bind(owner.clone());
+        qb.push(", owner_email = ").push_bind(owner);
+    }
+    qb.push(" WHERE node_id = ").push_bind(node_id.to_string());
+    let res = qb.build().execute(pool).await?;
+    Ok(res.rows_affected())
+}
+
+/// Flag the node so its spark-agent creates the named VPN out-of-band.
+pub async fn mark_vpn_create(pool: &SqlitePool, node_id: &str, vpn_name: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE nodes SET spark_vpn_name = ?, pending_vpn_create = 1, updated_at = ? \
+         WHERE node_id = ?",
+    )
+    .bind(vpn_name)
+    .bind(now_iso())
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Append peer ids to the node's `pending_peer_deletions` work queue (a JSON
+/// array consumed by the spark-agent). Read-modify-write on the JSON column.
+pub async fn append_pending_peer_deletions(
+    pool: &SqlitePool,
+    node_id: &str,
+    peer_ids: &[String],
+) -> AppResult<()> {
+    if peer_ids.is_empty() {
+        return Ok(());
+    }
+    let existing: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT pending_peer_deletions FROM nodes WHERE node_id = ?")
+            .bind(node_id)
+            .fetch_optional(pool)
+            .await?;
+    let mut list: Vec<String> = existing
+        .and_then(|(json,)| json)
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    list.extend(peer_ids.iter().cloned());
+    let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+    sqlx::query("UPDATE nodes SET pending_peer_deletions = ?, updated_at = ? WHERE node_id = ?")
+        .bind(json)
+        .bind(now_iso())
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ── Heartbeat ───────────────────────────────────────────────────
 
 #[derive(Debug, Default)]

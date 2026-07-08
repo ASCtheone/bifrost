@@ -20,16 +20,28 @@ pub struct Config {
 pub struct AuthConfig {
     #[serde(default)]
     pub mode: AuthMode,
-    pub cognito_issuer: Option<String>,
-    pub cognito_audience: Option<String>,
+    /// HS256 secret for signing/verifying our own JWTs (local mode). If unset,
+    /// an ephemeral secret is generated at startup (tokens won't survive a
+    /// restart — set this in production).
+    pub jwt_secret: Option<String>,
+    /// Access-token lifetime in hours.
+    #[serde(default = "default_token_ttl_hours")]
+    pub token_ttl_hours: i64,
+    /// Optional first-run bootstrap: if no users exist, create this superadmin.
+    pub bootstrap_admin_email: Option<String>,
+    pub bootstrap_admin_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMode {
+    /// Local identity store with self-issued JWTs (no AWS dependency).
     #[default]
-    Cognito,
     Local,
+}
+
+fn default_token_ttl_hours() -> i64 {
+    720 // 30 days
 }
 
 fn default_node_id() -> String {

@@ -22,3 +22,11 @@ subtle = "2"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 ulid = "1"
+# Local auth (replaces AWS Cognito): password hashing + JWT issuance/verification
+argon2 = "0.5"
+jsonwebtoken = "9"
+rand = "0.8"
+# WireGuard device provisioning: x25519 keypairs + md5 IP hashing + base64
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+md-5 = "0.10"
+base64 = "0.22"
