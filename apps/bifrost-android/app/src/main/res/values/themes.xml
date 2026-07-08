@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BifrostVPN" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#131416</item>
+        <item name="android:navigationBarColor">#131416</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">#1C1E21</item>
+    </style>
+</resources>

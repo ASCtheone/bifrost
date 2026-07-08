@@ -1,0 +1,21 @@
+{
+  "name": "spark-client",
+  "sourceRoot": "libs/spark-client/src",
+  "projectType": "library",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p tsconfig.json",
+        "cwd": "libs/spark-client"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run",
+        "cwd": "libs/spark-client"
+      }
+    }
+  }
+}

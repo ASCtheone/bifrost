@@ -1,0 +1,14 @@
+# Bifrost control-plane config. Copy to bifrost-control.toml and edit.
+# Override the config path with BIFROST_CONFIG=/path/to/file.toml
+
+node_id = "control-1"
+bind_addr = "0.0.0.0"
+api_port = 8443
+database_url = "sqlite://data/bifrost.db"
+
+[auth]
+# "cognito" = verify Cognito-issued JWTs via JWKS (keeps managed login on AWS Cognito)
+# "local"   = self-hosted users + JWT issuance (zero AWS)  [not yet implemented]
+mode = "cognito"
+cognito_issuer = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX"
+cognito_audience = "your-user-pool-client-id"

@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  lint-and-test-ts:
+    name: TypeScript Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install unifi-connect deps
+        run: cd libs/unifi-connect && npm ci
+
+      - name: Type check unifi-connect
+        run: cd libs/unifi-connect && npx tsc --noEmit
+
+      - name: Test unifi-connect
+        run: cd libs/unifi-connect && npx vitest run
+
+      - name: Build dynamo-schema
+        run: npx nx build dynamo-schema
+
+      - name: Type check dynamo-schema
+        run: cd libs/dynamo-schema && npx tsc --noEmit
+
+      - name: Build dynamo-repo
+        run: npx nx build dynamo-repo
+
+      - name: Type check dynamo-repo
+        run: cd libs/dynamo-repo && npx tsc --noEmit
+
+      - name: Type check spark-client
+        run: cd libs/spark-client && npx tsc --noEmit
+
+      - name: Test spark-client
+        run: cd libs/spark-client && npx vitest run
+
+      - name: Type check spark-lambda
+        run: cd apps/spark-lambda && npx tsc --noEmit
+
+      - name: Type check spark-agent
+        run: cd apps/spark-agent && npx tsc --noEmit
+
+      - name: Test spark-agent
+        run: cd apps/spark-agent && npx vitest run
+
+  build-dashboard:
+    name: Build Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Build
+        run: cd apps/dashboard && npx ng build --configuration production
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: apps/dashboard/dist/dashboard/
+
+  deploy-sst:
+    name: Deploy via SST
+    needs: [lint-and-test-ts, build-dashboard]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Install deps
+        run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: apps/dashboard/dist/dashboard/
+
+      - name: Deploy
+        run: npx sst deploy --stage production

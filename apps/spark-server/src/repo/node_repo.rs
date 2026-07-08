@@ -1,0 +1,295 @@
+use crate::domain::{Node, PendingKey};
+use crate::error::{AppError, AppResult};
+use crate::util::{iso_in, now_iso};
+use serde_json::Value;
+use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+
+// ── Basic CRUD ──────────────────────────────────────────────────
+
+pub async fn get_node(pool: &SqlitePool, node_id: &str) -> AppResult<Option<Node>> {
+    let node = sqlx::query_as::<_, Node>("SELECT * FROM nodes WHERE node_id = ?")
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(node)
+}
+
+const NODE_COLS: &str = "node_id, node_name, owner_id, owner_email, status, role, priority, \
+    last_seen, tunnel_url, tunnel_id, controller_url, controller_api_key, spark_vpn_name, \
+    spark_vpn_id, pending_vpn_create, sync_state, last_applied_version, actual_config, error, \
+    adoption_status, adoption_code, code_expires_at, node_key_hash, key_issued_at, wan_ip, geo, \
+    isp_name, speed_down, speed_up, speed_ping, pending_peer_deletions, created_at, updated_at";
+
+fn bind_node<'q>(
+    q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    n: &'q Node,
+) -> sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    q.bind(&n.node_id)
+        .bind(&n.node_name)
+        .bind(&n.owner_id)
+        .bind(&n.owner_email)
+        .bind(&n.status)
+        .bind(&n.role)
+        .bind(n.priority)
+        .bind(&n.last_seen)
+        .bind(&n.tunnel_url)
+        .bind(&n.tunnel_id)
+        .bind(&n.controller_url)
+        .bind(&n.controller_api_key)
+        .bind(&n.spark_vpn_name)
+        .bind(&n.spark_vpn_id)
+        .bind(n.pending_vpn_create)
+        .bind(&n.sync_state)
+        .bind(n.last_applied_version)
+        .bind(&n.actual_config)
+        .bind(&n.error)
+        .bind(&n.adoption_status)
+        .bind(&n.adoption_code)
+        .bind(&n.code_expires_at)
+        .bind(&n.node_key_hash)
+        .bind(&n.key_issued_at)
+        .bind(&n.wan_ip)
+        .bind(&n.geo)
+        .bind(&n.isp_name)
+        .bind(n.speed_down)
+        .bind(n.speed_up)
+        .bind(n.speed_ping)
+        .bind(&n.pending_peer_deletions)
+        .bind(&n.created_at)
+        .bind(&n.updated_at)
+}
+
+const NODE_PLACEHOLDERS: &str =
+    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?";
+
+/// Insert-or-replace (Dynamo `Put` overwrites).
+pub async fn put_node(pool: &SqlitePool, node: &Node) -> AppResult<()> {
+    let sql = format!("INSERT OR REPLACE INTO nodes ({NODE_COLS}) VALUES ({NODE_PLACEHOLDERS})");
+    bind_node(sqlx::query(&sql), node).execute(pool).await?;
+    Ok(())
+}
+
+/// Insert only if absent (Dynamo `attribute_not_exists(PK)`).
+pub async fn put_node_if_not_exists(pool: &SqlitePool, node: &Node) -> AppResult<()> {
+    let sql = format!("INSERT INTO nodes ({NODE_COLS}) VALUES ({NODE_PLACEHOLDERS})");
+    bind_node(sqlx::query(&sql), node)
+        .execute(pool)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                AppError::Conflict("node already exists".into())
+            }
+            other => AppError::Db(other),
+        })?;
+    Ok(())
+}
+
+pub async fn delete_node(pool: &SqlitePool, node_id: &str) -> AppResult<()> {
+    sqlx::query("DELETE FROM nodes WHERE node_id = ?")
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// ── Role management ─────────────────────────────────────────────
+
+pub async fn update_node_role(
+    pool: &SqlitePool,
+    node_id: &str,
+    role: &str,
+    priority: i64,
+) -> AppResult<()> {
+    sqlx::query("UPDATE nodes SET role = ?, priority = ?, updated_at = ? WHERE node_id = ?")
+        .bind(role)
+        .bind(priority)
+        .bind(now_iso())
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// ── Queries ─────────────────────────────────────────────────────
+
+pub async fn query_nodes_by_role(pool: &SqlitePool, role: &str) -> AppResult<Vec<Node>> {
+    let nodes = sqlx::query_as::<_, Node>("SELECT * FROM nodes WHERE role = ? ORDER BY priority")
+        .bind(role)
+        .fetch_all(pool)
+        .await?;
+    Ok(nodes)
+}
+
+/// Online secondaries, highest priority first (candidates for auto-promotion).
+pub async fn query_online_secondaries_by_priority(
+    pool: &SqlitePool,
+    limit: i64,
+) -> AppResult<Vec<Node>> {
+    let nodes = sqlx::query_as::<_, Node>(
+        "SELECT * FROM nodes WHERE role = 'secondary' AND status = 'online' \
+         ORDER BY priority DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(nodes)
+}
+
+pub async fn query_all_nodes(pool: &SqlitePool) -> AppResult<Vec<Node>> {
+    let nodes = sqlx::query_as::<_, Node>("SELECT * FROM nodes ORDER BY created_at")
+        .fetch_all(pool)
+        .await?;
+    Ok(nodes)
+}
+
+// ── Adoption flow ───────────────────────────────────────────────
+
+pub async fn get_node_by_adoption_code(
+    pool: &SqlitePool,
+    code: &str,
+) -> AppResult<Option<Node>> {
+    let node = sqlx::query_as::<_, Node>("SELECT * FROM nodes WHERE adoption_code = ? LIMIT 1")
+        .bind(code)
+        .fetch_optional(pool)
+        .await?;
+    Ok(node)
+}
+
+pub async fn update_adoption_status(
+    pool: &SqlitePool,
+    node_id: &str,
+    adoption_status: &str,
+) -> AppResult<()> {
+    sqlx::query("UPDATE nodes SET adoption_status = ?, updated_at = ? WHERE node_id = ?")
+        .bind(adoption_status)
+        .bind(now_iso())
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Store the hashed node key, mark adopted, and clear the (now consumed)
+/// adoption code + expiry. Mirrors the old `setNodeKeyHash`.
+pub async fn set_node_key_hash(pool: &SqlitePool, node_id: &str, key_hash: &str) -> AppResult<()> {
+    let now = now_iso();
+    sqlx::query(
+        "UPDATE nodes SET node_key_hash = ?, key_issued_at = ?, adoption_status = 'adopted', \
+         updated_at = ?, adoption_code = NULL, code_expires_at = NULL WHERE node_id = ?",
+    )
+    .bind(key_hash)
+    .bind(&now)
+    .bind(&now)
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn revoke_node_key(pool: &SqlitePool, node_id: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE nodes SET adoption_status = 'revoked', updated_at = ?, \
+         node_key_hash = NULL, key_issued_at = NULL WHERE node_id = ?",
+    )
+    .bind(now_iso())
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ── Heartbeat ───────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+pub struct HeartbeatUpdate {
+    pub actual_config: Value, // always written; Value::Null clears the column
+    pub wan_ip: Option<String>,
+    pub geo: Option<Value>,
+    pub isp_name: Option<String>,
+    pub speed_down: Option<f64>,
+    pub speed_up: Option<f64>,
+    pub speed_ping: Option<f64>,
+    pub spark_vpn_id: Option<String>,
+    pub pending_vpn_create: Option<bool>,
+    pub clear_peer_deletions: bool,
+}
+
+pub async fn update_heartbeat(
+    pool: &SqlitePool,
+    node_id: &str,
+    u: HeartbeatUpdate,
+) -> AppResult<()> {
+    let now = now_iso();
+    let mut qb: QueryBuilder<Sqlite> =
+        QueryBuilder::new("UPDATE nodes SET status = 'online', last_seen = ");
+    qb.push_bind(now.clone());
+    qb.push(", updated_at = ").push_bind(now);
+
+    let ac = match u.actual_config {
+        Value::Null => None,
+        v => Some(v.to_string()),
+    };
+    qb.push(", actual_config = ").push_bind(ac);
+
+    if let Some(v) = u.wan_ip {
+        qb.push(", wan_ip = ").push_bind(v);
+    }
+    if let Some(v) = u.geo {
+        qb.push(", geo = ").push_bind(v.to_string());
+    }
+    if let Some(v) = u.isp_name {
+        qb.push(", isp_name = ").push_bind(v);
+    }
+    if let Some(v) = u.speed_down {
+        qb.push(", speed_down = ").push_bind(v);
+    }
+    if let Some(v) = u.speed_up {
+        qb.push(", speed_up = ").push_bind(v);
+    }
+    if let Some(v) = u.speed_ping {
+        qb.push(", speed_ping = ").push_bind(v);
+    }
+    if let Some(v) = u.spark_vpn_id {
+        qb.push(", spark_vpn_id = ").push_bind(v);
+    }
+    if let Some(v) = u.pending_vpn_create {
+        qb.push(", pending_vpn_create = ").push_bind(v);
+    }
+    if u.clear_peer_deletions {
+        qb.push(", pending_peer_deletions = ").push_bind("[]".to_string());
+    }
+
+    qb.push(" WHERE node_id = ").push_bind(node_id.to_string());
+    qb.build().execute(pool).await?;
+    Ok(())
+}
+
+// ── Pending key (temporary raw key for adoption handoff) ────────
+
+pub async fn put_pending_key(pool: &SqlitePool, node_id: &str, raw_key: &str) -> AppResult<()> {
+    sqlx::query(
+        "INSERT OR REPLACE INTO pending_keys (node_id, raw_key, expires_at) VALUES (?, ?, ?)",
+    )
+    .bind(node_id)
+    .bind(raw_key)
+    .bind(iso_in(300))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_pending_key(pool: &SqlitePool, node_id: &str) -> AppResult<Option<PendingKey>> {
+    let pk = sqlx::query_as::<_, PendingKey>("SELECT * FROM pending_keys WHERE node_id = ?")
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(pk)
+}
+
+pub async fn delete_pending_key(pool: &SqlitePool, node_id: &str) -> AppResult<()> {
+    sqlx::query("DELETE FROM pending_keys WHERE node_id = ?")
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

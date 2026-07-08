@@ -1,0 +1,33 @@
+{
+  "name": "bifrost-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "libs/*"
+  ],
+  "scripts": {
+    "create-superadmin": "node scripts/create-superadmin.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "aws-cdk-lib": "^2.243.0",
+    "constructs": "^10.5.1",
+    "msw": "^2.7.0",
+    "nx": "^22.5.1",
+    "sst": "^4.3.7",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.1011.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1012.0",
+    "@aws-sdk/client-dynamodb": "^3.1011.0",
+    "@aws-sdk/lib-dynamodb": "^3.1011.0",
+    "@fortawesome/angular-fontawesome": "^4.0.0",
+    "@fortawesome/fontawesome-svg-core": "^7.2.0",
+    "@fortawesome/pro-light-svg-icons": "^7.2.0",
+    "@fortawesome/pro-regular-svg-icons": "^7.2.0",
+    "@fortawesome/pro-solid-svg-icons": "^7.2.0"
+  }
+}

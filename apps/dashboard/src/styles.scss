@@ -1,0 +1,140 @@
+// ─── UniFi-inspired Theme Variables ───
+
+:root {
+  // Dark theme (default)
+  --bg-primary: #1c1e21;
+  --bg-secondary: #131416;
+  --bg-surface: #2a2d31;
+  --bg-input: #3d414a;
+
+  --text-primary: #f9fafa;
+  --text-secondary: #dee0e3;
+  --text-tertiary: #b7bcc2;
+  --text-disabled: #737c87;
+
+  --accent: #00C0FF;
+  --accent-hover: #33cfff;
+  --border: #3d414a;
+
+  --success: #37be5f;
+  --warning: #e79613;
+  --error: #ee6368;
+  --info: #00C0FF;
+
+  --purple: #b47cde;
+  --aqua: #63bde3;
+  --lime: #a0bd28;
+  --navy: #4071bf;
+
+  --topbar-bg: #282b2f;
+  --sidebar-bg: #131416;
+  --sidebar-hover: #2a2d31;
+  --sidebar-active: #2a2d31;
+
+  --scrollbar-track: #131416;
+  --scrollbar-thumb: #3d414a;
+  --scrollbar-thumb-hover: #4d5261;
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafa;
+  --bg-surface: #f5f6f7;
+  --bg-input: #f5f6f7;
+
+  --text-primary: #212327;
+  --text-secondary: #50565e;
+  --text-tertiary: #808893;
+  --text-disabled: #c2c6cb;
+
+  --accent: #00A0DD;
+  --accent-hover: #008cc2;
+  --border: #e4e6eb;
+
+  --success: #38cc65;
+  --warning: #f5a524;
+  --error: #f0383b;
+  --info: #00A0DD;
+
+  --purple: #a354e3;
+  --aqua: #44c6fd;
+  --lime: #afd322;
+  --navy: #003d9e;
+
+  --topbar-bg: #ffffff;
+  --sidebar-bg: #f5f6f7;
+  --sidebar-hover: #e4e6eb;
+  --sidebar-active: #e4e6eb;
+
+  --scrollbar-track: #f9fafa;
+  --scrollbar-thumb: #c2c6cb;
+  --scrollbar-thumb-hover: #808893;
+
+  color-scheme: light;
+}
+
+// ─── Fonts ───
+
+@font-face {
+  font-family: 'Audiowide';
+  src: url('/fonts/Audiowide-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+// ─── Reset & Base ───
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Audiowide', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+*, *::before, *::after {
+  font-family: inherit;
+}
+
+input, button, select, textarea {
+  font-family: 'Audiowide', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+code, .mono, .mono-sm {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace !important;
+}
+
+// ─── Scrollbar ───
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+}

@@ -1,0 +1,19 @@
+services:
+  node-agent:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./service-account.json:/app/service-account.json:ro
+    depends_on:
+      - cloudflared
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    env_file:
+      - .env.tunnel

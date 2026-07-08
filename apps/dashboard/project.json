@@ -1,0 +1,21 @@
+{
+  "name": "dashboard",
+  "sourceRoot": "apps/dashboard/src",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx ng build --configuration production",
+        "cwd": "apps/dashboard"
+      }
+    },
+    "serve": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx ng serve",
+        "cwd": "apps/dashboard"
+      }
+    }
+  }
+}
