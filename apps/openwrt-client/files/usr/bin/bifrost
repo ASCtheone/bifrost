@@ -1,0 +1,251 @@
+#!/bin/sh
+# bifrost — OpenWrt/GL.iNet client for the Bifrost VPN.
+#
+# Turns the router into a Bifrost *device*: it fetches its WireGuard config from
+# the master's provision URL and brings up a WireGuard client tunnel to a remote
+# spark, optionally routing the LAN through it. Picks the primary node and fails
+# over to another node when the tunnel goes stale.
+#
+# Usage: bifrost {provision|up|down|status|refresh|run}
+set -u
+
+CONFIG=bifrost
+STATE_DIR=/tmp/bifrost
+RESP="$STATE_DIR/provision.json"
+WGTMP="$STATE_DIR/wg.conf"
+HASHFILE="$STATE_DIR/applied.hash"
+
+mkdir -p "$STATE_DIR"
+
+log() { logger -t bifrost "$*"; [ -t 1 ] && echo "bifrost: $*"; }
+
+cfg_get() { uci -q get "${CONFIG}.settings.$1"; }
+
+ifname() { local n; n=$(cfg_get ifname); [ -n "$n" ] && echo "$n" || echo bifrost; }
+
+# ── config fetch ────────────────────────────────────────────────
+
+fetch_config() {
+	local url
+	url=$(cfg_get provision_url)
+	if [ -z "$url" ]; then
+		log "no provision_url configured (set it in /etc/config/bifrost)"
+		return 1
+	fi
+	if ! curl -fsS --max-time 20 "$url" -o "$RESP" 2>/dev/null; then
+		log "could not reach master at $url"
+		return 1
+	fi
+	if ! jq -e '.nodes' "$RESP" >/dev/null 2>&1; then
+		log "unexpected provision response"
+		return 1
+	fi
+	return 0
+}
+
+# ── WireGuard .conf parsing ─────────────────────────────────────
+
+wg_field() { # wg_field <file> <Key>
+	sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | head -n1
+}
+
+sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}' || md5sum "$1" | awk '{print $1}'; }
+
+# ── apply config to the router (uci netifd) ─────────────────────
+
+apply_wg() { # apply_wg <wg.conf file>
+	local iface priv addr dns pub psk ep ephost epport allowed mtu peer d a
+	iface=$(ifname)
+	priv=$(wg_field "$1" PrivateKey)
+	addr=$(wg_field "$1" Address)
+	dns=$(wg_field "$1" DNS | tr ',' ' ')
+	pub=$(wg_field "$1" PublicKey)
+	psk=$(wg_field "$1" PresharedKey)
+	ep=$(wg_field "$1" Endpoint)
+	ephost=${ep%:*}
+	epport=${ep##*:}
+	allowed=$(wg_field "$1" AllowedIPs | tr ',' ' ')
+	mtu=$(cfg_get mtu); [ -n "$mtu" ] || mtu=1420
+
+	if [ -z "$priv" ] || [ -z "$pub" ] || [ -z "$ephost" ]; then
+		log "config missing required WireGuard fields"
+		return 1
+	fi
+
+	# Interface
+	uci -q delete "network.$iface"
+	uci set "network.$iface=interface"
+	uci set "network.$iface.proto=wireguard"
+	uci set "network.$iface.private_key=$priv"
+	uci set "network.$iface.mtu=$mtu"
+	[ -n "$addr" ] && uci add_list "network.$iface.addresses=$addr"
+	for d in $dns; do uci add_list "network.$iface.dns=$d"; done
+
+	# Peer — drop any existing peers for this interface, then add ours.
+	while uci -q delete "network.@wireguard_${iface}[0]"; do :; done
+	peer=$(uci add network "wireguard_${iface}")
+	uci set "network.$peer.public_key=$pub"
+	[ -n "$psk" ] && uci set "network.$peer.preshared_key=$psk"
+	uci set "network.$peer.endpoint_host=$ephost"
+	uci set "network.$peer.endpoint_port=$epport"
+	uci set "network.$peer.persistent_keepalive=25"
+	uci set "network.$peer.route_allowed_ips=1"
+	for a in $allowed; do uci add_list "network.$peer.allowed_ips=$a"; done
+
+	uci commit network
+	[ "$(cfg_get route_lan)" = "1" ] && setup_firewall "$iface"
+	return 0
+}
+
+# ── firewall: route LAN clients out through the tunnel ──────────
+
+setup_firewall() { # setup_firewall <iface>
+	local iface="$1" i name dest z f
+	# Remove any bifrost zone/forwarding we previously added (indices shift on
+	# delete, so only advance when we don't delete).
+	i=0
+	while name=$(uci -q get "firewall.@zone[$i].name"); do
+		[ "$name" = "bifrost" ] && uci -q delete "firewall.@zone[$i]" || i=$((i + 1))
+	done
+	i=0
+	while dest=$(uci -q get "firewall.@forwarding[$i].dest"); do
+		[ "$dest" = "bifrost" ] && uci -q delete "firewall.@forwarding[$i]" || i=$((i + 1))
+	done
+
+	z=$(uci add firewall zone)
+	uci set "firewall.$z.name=bifrost"
+	uci set "firewall.$z.network=$iface"
+	uci set "firewall.$z.input=REJECT"
+	uci set "firewall.$z.output=ACCEPT"
+	uci set "firewall.$z.forward=REJECT"
+	uci set "firewall.$z.masq=1"
+	uci set "firewall.$z.mtu_fix=1"
+	f=$(uci add firewall forwarding)
+	uci set "firewall.$f.src=lan"
+	uci set "firewall.$f.dest=bifrost"
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+# ── tunnel health ───────────────────────────────────────────────
+
+handshake_age() { # echoes seconds since last handshake, or "none"
+	local hs now
+	hs=$(wg show "$(ifname)" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+	[ -n "$hs" ] && [ "$hs" != "0" ] || { echo none; return; }
+	now=$(date +%s)
+	echo $((now - hs))
+}
+
+healthy() { local a; a=$(handshake_age); [ "$a" != none ] && [ "$a" -lt 180 ]; }
+
+wait_handshake() { # wait_handshake <seconds>
+	local t=0
+	while [ "$t" -lt "$1" ]; do
+		[ "$(handshake_age)" != none ] && return 0
+		sleep 2; t=$((t + 2))
+	done
+	return 1
+}
+
+# ── connect (with node failover) ────────────────────────────────
+
+connect() {
+	fetch_config || return 1
+	local order idx conf hash
+	# Try nodes primary-first (role=="primary" sorts ahead).
+	order=$(jq -r '.nodes | to_entries | sort_by(.value.role != "primary") | .[].key' "$RESP")
+	if [ -z "$order" ]; then
+		log "master returned no usable nodes"
+		return 1
+	fi
+	for idx in $order; do
+		conf=$(jq -r ".nodes[$idx].wgConfig // empty" "$RESP")
+		[ -n "$conf" ] || continue
+		printf '%s\n' "$conf" >"$WGTMP"
+		hash=$(sha "$WGTMP")
+		# Already on this exact config and healthy → nothing to do.
+		if [ "$hash" = "$(cat "$HASHFILE" 2>/dev/null)" ] && healthy; then
+			return 0
+		fi
+		apply_wg "$WGTMP" || continue
+		ifup "$(ifname)" >/dev/null 2>&1
+		if wait_handshake 15; then
+			echo "$hash" >"$HASHFILE"
+			log "connected via node $(jq -r ".nodes[$idx].name // .nodes[$idx].nodeId" "$RESP")"
+			return 0
+		fi
+		log "node $(jq -r ".nodes[$idx].nodeId" "$RESP") did not come up, trying next"
+	done
+	log "could not establish a tunnel to any node"
+	return 1
+}
+
+teardown() {
+	local iface; iface=$(ifname)
+	ifdown "$iface" >/dev/null 2>&1
+	uci -q delete "network.$iface"
+	while uci -q delete "network.@wireguard_${iface}[0]"; do :; done
+	uci commit network
+	rm -f "$HASHFILE"
+}
+
+# ── subcommands ─────────────────────────────────────────────────
+
+cmd_status() {
+	local iface age
+	iface=$(ifname)
+	echo "Bifrost VPN status"
+	echo "  interface:   $iface"
+	echo "  provision:   $(cfg_get provision_url)"
+	echo "  route LAN:   $([ "$(cfg_get route_lan)" = 1 ] && echo yes || echo no)"
+	age=$(handshake_age)
+	if [ "$age" = none ]; then
+		echo "  tunnel:      down (no handshake)"
+	else
+		echo "  tunnel:      up (last handshake ${age}s ago)"
+	fi
+	echo
+	wg show "$iface" 2>/dev/null || echo "  (interface not present)"
+}
+
+case "${1:-}" in
+	provision | refresh) connect ;;
+	up)
+		uci set "${CONFIG}.settings.enabled=1"; uci commit "$CONFIG"
+		/etc/init.d/bifrost enable >/dev/null 2>&1
+		/etc/init.d/bifrost restart
+		;;
+	down)
+		uci set "${CONFIG}.settings.enabled=0"; uci commit "$CONFIG"
+		/etc/init.d/bifrost stop
+		teardown
+		;;
+	status) cmd_status ;;
+	json)
+		# Machine-readable status for the LuCI plugin.
+		age=$(handshake_age)
+		[ "$age" = none ] && state=down || state=up
+		printf '{"state":"%s","handshakeAge":"%s","provisionUrl":"%s","interface":"%s","routeLan":%s,"enabled":%s}\n' \
+			"$state" "$age" "$(cfg_get provision_url)" "$(ifname)" \
+			"$([ "$(cfg_get route_lan)" = 1 ] && echo true || echo false)" \
+			"$([ "$(cfg_get enabled)" = 1 ] && echo true || echo false)"
+		;;
+	run)
+		# Foreground daemon (invoked by procd). Connect, then keep healthy.
+		local_interval=$(cfg_get refresh_interval); [ -n "$local_interval" ] || local_interval=300
+		connect || log "initial connect failed; will keep retrying"
+		while sleep "$local_interval"; do
+			if healthy; then
+				connect >/dev/null 2>&1 || true   # refresh config, reapply only if changed
+			else
+				log "tunnel stale — reconnecting (failover)"
+				connect || log "reconnect failed; retrying next cycle"
+			fi
+		done
+		;;
+	*)
+		echo "Usage: bifrost {provision|up|down|status|json|refresh|run}" >&2
+		exit 1
+		;;
+esac

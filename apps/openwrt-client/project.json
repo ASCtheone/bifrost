@@ -1,0 +1,26 @@
+{
+  "name": "openwrt-client",
+  "sourceRoot": "apps/openwrt-client/files",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "./build-ipk.sh",
+        "cwd": "apps/openwrt-client"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "description": "POSIX-shell syntax check of the client scripts.",
+      "options": {
+        "commands": [
+          "sh -n files/usr/bin/bifrost",
+          "sh -n files/etc/init.d/bifrost"
+        ],
+        "cwd": "apps/openwrt-client",
+        "parallel": false
+      }
+    }
+  }
+}

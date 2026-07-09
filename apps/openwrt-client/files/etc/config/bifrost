@@ -1,0 +1,18 @@
+config bifrost 'settings'
+	# Master-issued provision URL for this router device, e.g.
+	#   https://master.example.com/provision/<token>
+	# Create a device of type "router" in the Bifrost dashboard to get one.
+	option provision_url ''
+
+	# Set to 1 to enable the tunnel (or use: bifrost up).
+	option enabled '0'
+
+	# Route the router's LAN clients through the Bifrost VPN (firewall zone
+	# + masquerade). Set 0 to only route the router's own traffic.
+	option route_lan '1'
+
+	# Seconds between config refreshes (picks up node/role changes + failover).
+	option refresh_interval '300'
+
+	# WireGuard interface name created on the router.
+	option ifname 'bifrost'
