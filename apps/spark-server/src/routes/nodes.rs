@@ -26,6 +26,8 @@ pub fn routes() -> Router<AppState> {
         .route("/nodes/:nodeId/revoke", post(revoke_node))
         .route("/nodes/:nodeId/delete-peer", post(delete_node_peer))
         .route("/nodes/:nodeId/role", put(set_node_role))
+        .route("/nodes/:nodeId/pause", post(pause_node))
+        .route("/nodes/:nodeId/resume", post(resume_node))
         .route("/nodes/:nodeId/shares", get(list_shares))
         .route("/nodes/:nodeId/share", post(add_share).delete(remove_share))
 }
@@ -78,7 +80,10 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         "pendingVpnCreate": n.pending_vpn_create,
         "role": n.role,
         "priority": n.priority,
-        "status": n.status,
+        // A paused spark is reported as offline so it's treated as disconnected
+        // everywhere; `paused` distinguishes an operator pause from a real outage.
+        "status": if n.paused { "offline" } else { n.status.as_str() },
+        "paused": n.paused,
         "adoptionStatus": n.adoption_status,
         "adoptionCode": n.adoption_code,
         "syncState": n.sync_state,
@@ -268,6 +273,18 @@ async fn create_vpn(
     let node = node_repo::get_node(&st.pool, &node_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Node not found".into()))?;
+    // Don't queue work the spark can't act on: the agent creates the VPN on its
+    // controller, so require the spark to be online (connected) and not paused.
+    if node.paused {
+        return Err(AppError::Conflict(
+            "Spark is paused — resume it before creating a VPN".into(),
+        ));
+    }
+    if node.status != "online" {
+        return Err(AppError::Conflict(
+            "Spark is offline — bring it online before creating a VPN".into(),
+        ));
+    }
     if let Some(name) = node.spark_vpn_name.filter(|s| !s.is_empty()) {
         return Err(AppError::Conflict(format!("VPN already exists: {name}")));
     }
@@ -357,6 +374,34 @@ async fn set_node_role(
     audit_repo::write_audit_log(&st.pool, action, &auth.sub, &node_id, json!({ "newRole": role }))
         .await?;
     Ok(Json(json!({ "success": true })))
+}
+
+// ── Pause / resume ──────────────────────────────────────────────
+
+/// POST /nodes/{nodeId}/pause — operator override: treat the spark as offline.
+async fn pause_node(
+    State(st): State<AppState>,
+    AdminAuth(auth): AdminAuth,
+    Path(node_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    if node_repo::set_paused(&st.pool, &node_id, true).await? == 0 {
+        return Err(AppError::NotFound("Node not found".into()));
+    }
+    audit_repo::write_audit_log(&st.pool, "node.paused", &auth.sub, &node_id, json!({})).await?;
+    Ok(Json(json!({ "success": true, "paused": true })))
+}
+
+/// POST /nodes/{nodeId}/resume — clear the operator pause.
+async fn resume_node(
+    State(st): State<AppState>,
+    AdminAuth(auth): AdminAuth,
+    Path(node_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    if node_repo::set_paused(&st.pool, &node_id, false).await? == 0 {
+        return Err(AppError::NotFound("Node not found".into()));
+    }
+    audit_repo::write_audit_log(&st.pool, "node.resumed", &auth.sub, &node_id, json!({})).await?;
+    Ok(Json(json!({ "success": true, "paused": false })))
 }
 
 // ── Sharing ─────────────────────────────────────────────────────

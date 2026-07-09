@@ -6,6 +6,11 @@ bind_addr = "0.0.0.0"
 api_port = 8443
 database_url = "sqlite://data/bifrost.db"
 
+# Directory served as the opkg package feed at /feed, so a GL.iNet/OpenWrt
+# router can add this master as a package source. Populate it with
+# scripts/build-feed.sh.
+feed_dir = "feed"
+
 [auth]
 # Self-hosted local identity: users live in the local database and the server
 # issues/verifies its own HS256 JWTs. No AWS dependency.

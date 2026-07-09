@@ -18,7 +18,7 @@ const NODE_COLS: &str = "node_id, node_name, owner_id, owner_email, status, role
     last_seen, tunnel_url, tunnel_id, controller_url, controller_api_key, spark_vpn_name, \
     spark_vpn_id, pending_vpn_create, sync_state, last_applied_version, actual_config, error, \
     adoption_status, adoption_code, code_expires_at, node_key_hash, key_issued_at, wan_ip, geo, \
-    isp_name, speed_down, speed_up, speed_ping, pending_peer_deletions, created_at, updated_at";
+    isp_name, speed_down, speed_up, speed_ping, pending_peer_deletions, created_at, updated_at, paused";
 
 fn bind_node<'q>(
     q: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
@@ -57,10 +57,11 @@ fn bind_node<'q>(
         .bind(&n.pending_peer_deletions)
         .bind(&n.created_at)
         .bind(&n.updated_at)
+        .bind(n.paused)
 }
 
 const NODE_PLACEHOLDERS: &str =
-    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?";
+    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?";
 
 /// Insert-or-replace (Dynamo `Put` overwrites).
 pub async fn put_node(pool: &SqlitePool, node: &Node) -> AppResult<()> {
@@ -253,6 +254,17 @@ pub async fn patch_node(pool: &SqlitePool, node_id: &str, p: NodePatch) -> AppRe
     }
     qb.push(" WHERE node_id = ").push_bind(node_id.to_string());
     let res = qb.build().execute(pool).await?;
+    Ok(res.rows_affected())
+}
+
+/// Pause or resume a node (operator override). Returns rows affected.
+pub async fn set_paused(pool: &SqlitePool, node_id: &str, paused: bool) -> AppResult<u64> {
+    let res = sqlx::query("UPDATE nodes SET paused = ?, updated_at = ? WHERE node_id = ?")
+        .bind(paused)
+        .bind(now_iso())
+        .bind(node_id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 

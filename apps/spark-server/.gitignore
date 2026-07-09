@@ -5,3 +5,5 @@
 *.db-shm
 *.log
 bifrost-control.toml
+# Generated opkg feed (built by scripts/build-feed.sh)
+/feed

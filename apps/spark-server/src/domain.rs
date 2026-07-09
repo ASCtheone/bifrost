@@ -59,6 +59,8 @@ pub struct Node {
     pub adoption_status: String,
     pub adoption_code: Option<String>,
     pub code_expires_at: Option<String>,
+    /// Operator override: when true the control plane treats the node as offline.
+    pub paused: bool,
     #[serde(skip_serializing)]
     pub node_key_hash: Option<String>,
     pub key_issued_at: Option<String>,

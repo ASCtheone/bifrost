@@ -12,8 +12,16 @@ pub struct Config {
     pub api_port: u16,
     #[serde(default = "default_database_url")]
     pub database_url: String,
+    /// Directory served as the opkg package feed (GET /feed/...). Lets a
+    /// GL.iNet/OpenWrt router add this master as a package source.
+    #[serde(default = "default_feed_dir")]
+    pub feed_dir: String,
     #[serde(default)]
     pub auth: AuthConfig,
+}
+
+fn default_feed_dir() -> String {
+    "feed".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -64,6 +72,7 @@ impl Default for Config {
             bind_addr: default_bind_addr(),
             api_port: default_api_port(),
             database_url: default_database_url(),
+            feed_dir: default_feed_dir(),
             auth: AuthConfig::default(),
         }
     }

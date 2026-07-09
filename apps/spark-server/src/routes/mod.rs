@@ -7,6 +7,7 @@ pub mod agent;
 pub mod auth;
 pub mod config;
 pub mod devices;
+pub mod feed;
 pub mod health;
 pub mod node; // spark-agent node-key routes (heartbeat, self)
 pub mod nodes; // admin node management
@@ -29,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .merge(config::routes())
         .merge(users::routes())
         .merge(admin::routes())
+        .merge(feed::routes())
         .with_state(state)
 }
 

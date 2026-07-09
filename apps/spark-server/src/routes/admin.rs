@@ -31,7 +31,8 @@ async fn dashboard(
                     json!({
                         "id": n.node_id,
                         "name": if n.node_name.is_empty() { n.node_id.clone() } else { n.node_name.clone() },
-                        "status": n.status,
+                        "status": if n.paused { "offline" } else { n.status.as_str() },
+                        "paused": n.paused,
                         "role": n.role,
                         "adoptionStatus": n.adoption_status,
                         "wanIp": n.wan_ip,
@@ -84,7 +85,7 @@ async fn dashboard(
         _ => {
             let nodes = node_repo::query_all_nodes(&st.pool).await?;
             let devices = device_repo::query_all_devices(&st.pool).await?;
-            let online = nodes.iter().filter(|n| n.status == "online").count();
+            let online = nodes.iter().filter(|n| n.status == "online" && !n.paused).count();
             Ok(Json(json!({
                 "authorized": true,
                 "role": "superadmin",
