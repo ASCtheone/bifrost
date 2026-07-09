@@ -1,5 +1,5 @@
 import { Injectable, signal, computed } from '@angular/core';
-import { signIn, signOut, getCurrentUser, fetchAuthSession, confirmSignIn } from 'aws-amplify/auth';
+import { environment } from '../../environments/environment';
 
 export interface AuthUser {
   readonly email: string;
@@ -7,11 +7,24 @@ export interface AuthUser {
   readonly groups: readonly string[];
 }
 
+interface JwtClaims {
+  sub: string;
+  email: string;
+  groups?: string[];
+  exp: number;
+}
+
+const TOKEN_KEY = 'bifrost_token';
+
+/**
+ * Local-auth service: authenticates against the self-hosted spark-server
+ * (`POST /auth/login`) and stores the issued JWT. Replaces AWS Amplify/Cognito.
+ */
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   readonly user = signal<AuthUser | null>(null);
   readonly loading = signal(true);
-  private accessToken: string | null = null;
+  private token: string | null = null;
 
   readonly isAdmin = computed(() => {
     const u = this.user();
@@ -25,75 +38,77 @@ export class AuthService {
 
   async init(): Promise<void> {
     try {
-      const current = await getCurrentUser();
-      const session = await fetchAuthSession();
-
-      // Use ID token for API calls — it contains email, groups, sub
-      this.accessToken = session.tokens?.idToken?.toString()
-        ?? session.tokens?.accessToken?.toString()
-        ?? null;
-
-      const idToken = session.tokens?.idToken;
-      const groups = (idToken?.payload?.['cognito:groups'] as string[] | undefined) ?? [];
-
-      this.user.set({
-        email: (idToken?.payload?.['email'] as string)
-          ?? current.signInDetails?.loginId
-          ?? current.username,
-        sub: current.userId,
-        groups,
-      });
-    } catch {
-      this.user.set(null);
-      this.accessToken = null;
+      const stored = localStorage.getItem(TOKEN_KEY);
+      const claims = stored ? decodeJwt(stored) : null;
+      if (stored && claims && claims.exp * 1000 > Date.now()) {
+        this.token = stored;
+        this.user.set({ email: claims.email, sub: claims.sub, groups: claims.groups ?? [] });
+      } else {
+        this.clearSession();
+      }
     } finally {
       this.loading.set(false);
     }
   }
 
   async login(identifier: string, password: string): Promise<{ needsNewPassword: boolean }> {
-    try { await signOut(); } catch { /* ignore */ }
-
-    const result = await signIn({ username: identifier, password });
-
-    if (result.nextStep?.signInStep === 'CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED') {
-      return { needsNewPassword: true };
+    const res = await fetch(`${environment.apiUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: identifier, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error?: string }).error ?? 'Login failed');
     }
-    if (result.isSignedIn) {
-      await this.init();
-    }
+    const data = (await res.json()) as { token: string };
+    this.setSession(data.token);
+    // The server issues a usable token even when a password change is pending,
+    // so there is no separate new-password challenge step.
     return { needsNewPassword: false };
   }
 
-  async completeNewPassword(newPassword: string): Promise<void> {
-    const result = await confirmSignIn({ challengeResponse: newPassword });
-    if (result.isSignedIn) {
-      await this.init();
-    }
+  async completeNewPassword(_newPassword: string): Promise<void> {
+    // No challenge flow in local auth; login already established the session.
   }
 
   async logout(): Promise<void> {
-    try { await signOut(); } catch { /* ignore */ }
-    this.user.set(null);
-    this.accessToken = null;
+    this.clearSession();
   }
 
   async getToken(): Promise<string> {
-    try {
-      const session = await fetchAuthSession({ forceRefresh: false });
-      this.accessToken = session.tokens?.idToken?.toString()
-        ?? session.tokens?.accessToken?.toString()
-        ?? null;
-    } catch {
-      this.accessToken = null;
-    }
-    if (!this.accessToken) {
+    if (!this.token) {
       throw new Error('No access token available');
     }
-    return this.accessToken;
+    return this.token;
   }
 
   isLoggedIn(): boolean {
     return this.user() !== null;
+  }
+
+  private setSession(token: string): void {
+    const claims = decodeJwt(token);
+    if (!claims) throw new Error('Invalid token');
+    this.token = token;
+    localStorage.setItem(TOKEN_KEY, token);
+    this.user.set({ email: claims.email, sub: claims.sub, groups: claims.groups ?? [] });
+  }
+
+  private clearSession(): void {
+    this.token = null;
+    localStorage.removeItem(TOKEN_KEY);
+    this.user.set(null);
+  }
+}
+
+/** Decode a JWT payload (no verification — the server verifies; this is display-only). */
+function decodeJwt(token: string): JwtClaims | null {
+  try {
+    const payload = token.split('.')[1];
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(json) as JwtClaims;
+  } catch {
+    return null;
   }
 }

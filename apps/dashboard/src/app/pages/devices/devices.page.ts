@@ -5,6 +5,7 @@ import { ApiService } from '../../services/api.service';
 import { AuthService } from '../../services/auth.service';
 import { ConfirmService } from '../../services/confirm.service';
 import { environment } from '../../../environments/environment';
+import QRCode from 'qrcode';
 
 type DeviceType = 'router' | 'phone' | 'tablet' | 'laptop';
 
@@ -131,13 +132,22 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
             }
             @if (provisionTab() === 'url') {
               <div class="url-section">
+                <label class="url-label">Provision link — for the Bifrost app (phone / desktop)</label>
                 <div class="url-box">
                   <code>{{ provisionUrl() }}</code>
                   <button class="copy-btn" (click)="copyProvisionUrl()">
                     {{ copied() ? 'Copied!' : 'Copy' }}
                   </button>
                 </div>
-                <p class="url-hint">Share this link — the device can open it to get the VPN config</p>
+
+                <label class="url-label">WireGuard config URL — for routers (GL.iNet → WireGuard Client)</label>
+                <div class="url-box">
+                  <code>{{ confUrl() }}</code>
+                  <button class="copy-btn" (click)="copyConfUrl()">
+                    {{ copied() ? 'Copied!' : 'Copy' }}
+                  </button>
+                </div>
+                <p class="url-hint">Returns the raw <code>.conf</code>. In your router's WireGuard client, add a profile from this URL (or use the Download tab and upload the file).</p>
               </div>
             }
           </div>
@@ -316,7 +326,9 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
     .download-btn:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: var(--accent); }
     .download-hint { font-size: 0.75rem; color: var(--text-disabled); margin: 0.75rem 0 0; }
     .url-section { width: 100%; }
-    .url-box { display: flex; align-items: center; gap: 0.5rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem; }
+    .url-label { display: block; font-size: 0.7rem; color: var(--text-tertiary); margin: 0.75rem 0 0.35rem; }
+    .url-label:first-child { margin-top: 0; }
+    .url-box { display: flex; align-items: center; gap: 0.5rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem; margin-bottom: 0.25rem; }
     .url-box code { flex: 1; font-size: 0.7rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .copy-btn { padding: 0.3rem 0.75rem; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-size: 0.7rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
     .url-hint { font-size: 0.75rem; color: var(--text-disabled); margin: 0.75rem 0 0; }
@@ -415,11 +427,29 @@ export class DevicesPage implements OnInit {
     return token ? `${environment.apiUrl}/provision/${token}` : '';
   }
 
-  generateQr(): void {
-    const url = this.provisionUrl();
-    if (!url) return;
-    const encoded = encodeURIComponent(url);
-    this.qrDataUrl.set(`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encoded}`);
+  /** Direct WireGuard .conf URL — for routers (e.g. GL.iNet) and WireGuard import. */
+  confUrl(): string {
+    const token = this.provisionDevice()?.token;
+    return token ? `${environment.apiUrl}/wg/${token}` : '';
+  }
+
+  /** Generate the QR locally from the actual WireGuard config (scannable by the
+   *  WireGuard app). Never sent to a third party — the config is a secret. */
+  async generateQr(): Promise<void> {
+    const config = this.provisionConfig();
+    if (!config) return;
+    try {
+      const dataUrl = await QRCode.toDataURL(config, { width: 240, margin: 1 });
+      this.qrDataUrl.set(dataUrl);
+    } catch (err) {
+      console.error('[devices] QR generation failed:', err);
+    }
+  }
+
+  async copyConfUrl(): Promise<void> {
+    await navigator.clipboard.writeText(this.confUrl());
+    this.copied.set(true);
+    setTimeout(() => this.copied.set(false), 2000);
   }
 
   async downloadDeviceConfig(): Promise<void> {

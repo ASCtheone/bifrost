@@ -35,6 +35,10 @@
   --scrollbar-thumb: #3d414a;
   --scrollbar-thumb-hover: #4d5261;
 
+  // Numeric/data font — the Audiowide brand font renders "0" with a slash
+  // (reads as a prohibition icon), so numbers use a clean mono stack instead.
+  --font-num: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
   color-scheme: dark;
 }
 

@@ -1,6 +1,5 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, APP_INITIALIZER, inject } from '@angular/core';
 import { provideRouter } from '@angular/router';
-import { Amplify } from 'aws-amplify';
 import { FaIconLibrary } from '@fortawesome/angular-fontawesome';
 import {
   faGrid2, faServer, faLaptopMobile, faMoon, faSunBright,
@@ -13,20 +12,7 @@ import {
 } from '@fortawesome/pro-light-svg-icons';
 
 import { routes } from './app.routes';
-import { environment } from '../environments/environment';
 import { AuthService } from './services/auth.service';
-
-Amplify.configure({
-  Auth: {
-    Cognito: {
-      userPoolId: environment.cognito.userPoolId,
-      userPoolClientId: environment.cognito.userPoolClientId,
-      loginWith: {
-        email: true,
-      },
-    },
-  },
-});
 
 function initAuth(): () => Promise<void> {
   const auth = inject(AuthService);

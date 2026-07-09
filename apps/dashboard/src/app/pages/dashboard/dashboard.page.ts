@@ -118,7 +118,7 @@ interface NodesResponse {
     .stat-dot { width: 8px; height: 8px; border-radius: 50%; }
     .stat-dot.online { background: var(--success); }
     .stat-label { font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-value { font-size: 1.75rem; font-weight: 600; color: var(--text-primary); }
+    .stat-value { font-size: 1.75rem; font-weight: 600; color: var(--text-primary); font-family: var(--font-num); font-variant-numeric: tabular-nums; }
     .stat-value.accent { color: var(--success); }
     .stat-card.has-issues { border-color: var(--error); }
     .stat-card.has-issues .stat-value { color: var(--error); }
@@ -144,7 +144,7 @@ interface NodesResponse {
     .info-row { display: flex; justify-content: space-between; align-items: center; padding: 0.65rem 1.25rem; border-bottom: 1px solid var(--border); }
     .info-row:last-child { border-bottom: none; }
     .info-label { font-size: 0.8rem; color: var(--text-tertiary); }
-    .info-value { font-size: 0.8rem; font-weight: 500; color: var(--text-primary); }
+    .info-value { font-size: 0.8rem; font-weight: 500; color: var(--text-primary); font-family: var(--font-num); font-variant-numeric: tabular-nums; }
     .info-value.warn { color: var(--error); }
     .empty-state { padding: 2rem; text-align: center; color: var(--text-disabled); font-size: 0.85rem; }
   `],

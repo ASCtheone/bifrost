@@ -10,6 +10,9 @@ export class WsService implements OnDestroy {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   connect(): void {
+    // Realtime channel disabled when no WS URL is configured (spark-server is
+    // HTTP-only). Pages still load their data over the REST API.
+    if (!environment.wsUrl) return;
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
     try {

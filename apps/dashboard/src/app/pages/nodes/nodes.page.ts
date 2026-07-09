@@ -41,6 +41,7 @@ interface NodeRow {
   readonly role: string;
   readonly priority: number;
   readonly status: string;
+  readonly paused: boolean;
   readonly adoptionStatus: string;
   readonly adoptionCode: string | null;
   readonly syncState: string;
@@ -196,7 +197,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                     <span class="isp-label">{{ node.ispName }}</span>
                   }
                   @if (node.speedDown) {
-                    <span class="speed-label">↓{{ node.speedDown | number:'1.0-0' }} ↑{{ node.speedUp | number:'1.0-0' }} Mbps</span>
+                    <span class="speed-label">↓&nbsp;{{ node.speedDown | number:'1.0-0' }}<span class="speed-sep">·</span>↑&nbsp;{{ node.speedUp | number:'1.0-0' }}<span class="speed-unit">Mbps</span></span>
                   }
                 </div>
               </div>
@@ -205,11 +206,12 @@ type PanelTab = 'status' | 'config' | 'unifi';
               <span class="role-pill" [class.primary]="node.role === 'primary'">{{ node.role }}</span>
               <div class="status-cell">
                 <span class="status-dot"
-                  [class.online]="node.status === 'online'"
-                  [class.offline]="node.status === 'offline'"
+                  [class.online]="node.status === 'online' && !node.paused"
+                  [class.offline]="node.status === 'offline' && !node.paused"
+                  [class.paused]="node.paused"
                   [class.pending]="node.adoptionStatus === 'pending'">
                 </span>
-                {{ node.adoptionStatus === 'adopted' ? node.status : node.adoptionStatus }}
+                {{ node.adoptionStatus === 'adopted' ? (node.paused ? 'paused' : node.status) : node.adoptionStatus }}
               </div>
               @if (node.adoptionStatus === 'available') {
                 <button class="adopt-btn" (click)="adoptNode(node.id); $event.stopPropagation()" [disabled]="busyNodeId() === node.id">
@@ -251,6 +253,15 @@ type PanelTab = 'status' | 'config' | 'unifi';
               @if (node.adoptionStatus !== 'revoked' && !node.shared) {
                 <button class="action-btn" (click)="downloadConfig(node.id)" title="Download config">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="15" height="15"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4m4-5l5 5 5-5m-5 5V3"/></svg>
+                </button>
+              }
+              @if (node.adoptionStatus === 'adopted' && !node.shared) {
+                <button class="action-btn" [class.resume]="node.paused" (click)="node.paused ? resumeNode(node.id) : pauseNode(node.id)" [disabled]="busyNodeId() === node.id" [title]="node.paused ? 'Resume spark' : 'Pause spark'">
+                  @if (node.paused) {
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
+                  } @else {
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+                  }
                 </button>
               }
               @if (node.adoptionStatus === 'adopted') {
@@ -442,9 +453,16 @@ type PanelTab = 'status' | 'config' | 'unifi';
                     <div class="vpn-cards">
                       <!-- Create button tile (first, if no spark VPN yet) -->
                       @if (!isSparkVpn(node) && node.adoptionStatus === 'adopted') {
-                        <button class="vpn-card create-tile" (click)="createVpn(node.id)" [disabled]="busyNodeId() === node.id">
+                        <button class="vpn-card create-tile"
+                                [class.disabled]="node.status !== 'online'"
+                                (click)="createVpn(node.id)"
+                                [disabled]="busyNodeId() === node.id || node.status !== 'online'"
+                                [title]="node.status !== 'online' ? 'The spark must be online before you can create a VPN' : 'Create the Bifrost VPN on this spark'">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><path d="M12 5v14m-7-7h14"/></svg>
-                          <span>Create Spark VPN</span>
+                          <span>{{ node.status === 'online' ? 'Create Spark VPN' : 'Spark offline' }}</span>
+                          @if (node.status !== 'online') {
+                            <span class="create-hint">Bring the spark online first</span>
+                          }
                         </button>
                       }
 
@@ -471,8 +489,12 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             </div>
                           }
                           @if (node.pendingVpnCreate) {
-                            <div class="vpn-pending">
-                              <span class="spinner"></span> Creating on controller...
+                            <div class="vpn-pending" [class.waiting]="node.status !== 'online'">
+                              @if (node.status === 'online') {
+                                <span class="spinner"></span> Creating on controller...
+                              } @else {
+                                <span class="wait-dot"></span> Waiting for spark to connect...
+                              }
                             </div>
                           }
                         </div>
@@ -601,7 +623,9 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .share-input:focus { outline: none; border-color: var(--accent); }
     .btn-sm-inline { padding: 0.5rem 0.75rem; font-size: 0.75rem; }
     .isp-label { color: var(--text-tertiary); font-family: inherit; font-size: 0.6rem; }
-    .speed-label { color: var(--success); font-family: inherit; font-size: 0.6rem; }
+    .speed-label { color: var(--success); font-family: var(--font-num); font-variant-numeric: tabular-nums; font-size: 0.65rem; white-space: nowrap; }
+    .speed-sep { margin: 0 0.4rem; opacity: 0.5; }
+    .speed-unit { margin-left: 0.35rem; color: var(--text-tertiary); }
 
     .node-badges { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
     .role-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.65rem; font-weight: 500; background: var(--bg-input); color: var(--text-tertiary); }
@@ -611,6 +635,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .status-dot.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
     .status-dot.offline { background: var(--text-disabled); }
     .status-dot.pending { background: var(--warning, #f59e0b); }
+    .status-dot.paused { background: var(--warning, #f59e0b); box-shadow: none; }
 
     .adopt-btn { display: inline-flex; align-items: center; gap: 0.35rem; padding: 4px 12px; border-radius: 10px; font-size: 0.65rem; font-weight: 600; border: 1px solid var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--success); cursor: pointer; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.3px; }
     .adopt-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--success) 25%, transparent); }
@@ -625,6 +650,8 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .action-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: none; border: 1px solid var(--border); color: var(--text-tertiary); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
     .action-btn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
     .action-btn.warning:hover { background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent); color: var(--warning, #f59e0b); border-color: var(--warning, #f59e0b); }
+    .action-btn.resume { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, transparent); }
+    .action-btn.resume:hover { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); border-color: var(--success); }
     .action-btn.danger:hover { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); border-color: var(--error); }
 
     /* Expand panel */
@@ -691,9 +718,15 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .spark-vpn-badge .vpn-name { color: var(--accent); font-weight: 600; }
     .spark-pill { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 0.55rem; font-weight: 700; letter-spacing: 1px; background: var(--accent); color: #fff; }
     .vpn-pending { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; font-size: 0.75rem; color: var(--accent); }
+    .vpn-pending.waiting { color: var(--text-tertiary); }
+    .wait-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
     .create-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.4rem; border: 2px dashed color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 5%, transparent); color: var(--accent); font-size: 0.8rem; font-weight: 500; cursor: pointer; transition: all 0.15s ease; min-height: 80px; }
     .create-tile:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
     .create-tile:disabled { opacity: 0.5; cursor: not-allowed; }
+    .create-tile.disabled { border-color: color-mix(in srgb, var(--text-disabled) 40%, transparent); background: transparent; color: var(--text-disabled); }
+    .create-tile.disabled:hover { background: transparent; border-color: color-mix(in srgb, var(--text-disabled) 40%, transparent); }
+    .create-hint { font-size: 0.65rem; font-weight: 400; color: var(--text-disabled); }
     .vpn-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
     .vpn-name { font-weight: 600; font-size: 0.85rem; color: var(--text-primary); }
     .vpn-port { font-family: monospace; font-size: 0.75rem; color: var(--text-disabled); }
@@ -1060,6 +1093,18 @@ export class NodesPage implements OnInit, OnDestroy {
   async createVpn(nodeId: string): Promise<void> {
     await this.withBusy(nodeId, async () => {
       await this.api.post(`/nodes/${nodeId}/create-vpn`);
+    });
+  }
+
+  async pauseNode(nodeId: string): Promise<void> {
+    await this.withBusy(nodeId, async () => {
+      await this.api.post(`/nodes/${nodeId}/pause`);
+    });
+  }
+
+  async resumeNode(nodeId: string): Promise<void> {
+    await this.withBusy(nodeId, async () => {
+      await this.api.post(`/nodes/${nodeId}/resume`);
     });
   }
 
