@@ -19,7 +19,9 @@ cd "$feed"
 for ipk in *.ipk; do
 	[ -e "$ipk" ] || continue
 	tmp="$(mktemp -d)"
-	( cd "$tmp" && ar x "$feed/$ipk" control.tar.gz && tar xzf control.tar.gz ./control )
+	# The ipk is a gzip'd tar of {debian-binary, control.tar.gz, data.tar.gz};
+	# pull control.tar.gz out of it, then extract the control file.
+	( cd "$tmp" && gzip -dc "$feed/$ipk" | tar xf - ./control.tar.gz && tar xzf control.tar.gz ./control )
 	size="$(wc -c <"$ipk" | tr -d ' ')"
 	sha="$(sha256sum "$ipk" | awk '{print $1}')"
 	{

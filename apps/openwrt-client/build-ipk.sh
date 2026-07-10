@@ -9,7 +9,7 @@
 # Usage: ./build-ipk.sh [output-dir]
 set -euo pipefail
 
-VERSION=0.1.0-3
+VERSION=0.1.0-4
 here="$(cd "$(dirname "$0")" && pwd)"
 outdir="${1:-$here/dist}"
 mkdir -p "$outdir"
@@ -47,8 +47,8 @@ Installed-Size: $(isize "$w/data")
 Depends: curl, jq, wireguard-tools, kmod-wireguard
 Description: Bifrost VPN for GL.iNet/OpenWrt.
  Connects this router to your Bifrost VPN: fetches its config from the master and
- configures WireGuard (integrating with GL.iNet's native WireGuard Client), with
- automatic node failover.
+ brings up a WireGuard client tunnel, routing the LAN through it with automatic
+ node failover. Includes a built-in config page at http://<router>:8099/.
 EOF
 	printf '/etc/config/bifrost\n' >"$w/control/conffiles"
 	cat >"$w/control/postinst" <<'EOF'
