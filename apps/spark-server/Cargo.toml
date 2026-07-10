@@ -20,7 +20,7 @@ sha2 = "0.10"
 hex = "0.4"
 subtle = "2"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
 ulid = "1"
 # Local auth (replaces AWS Cognito): password hashing + JWT issuance/verification
 argon2 = "0.5"

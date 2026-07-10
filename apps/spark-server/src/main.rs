@@ -12,8 +12,11 @@ mod util;
 mod wg;
 
 use anyhow::Context;
+use axum::response::Redirect;
+use axum::routing::get;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -52,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
     routes::auth::bootstrap_admin(&pool, &config).await?;
 
     let addr = format!("{}:{}", config.bind_addr, config.api_port);
+    let dashboard_dir = config.dashboard_dir.clone();
     let state = state::AppState {
         pool,
         config: Arc::new(config),
@@ -63,9 +67,25 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = routes::router(state)
-        .layer(TraceLayer::new_for_http())
-        .layer(cors);
+    let mut app = routes::router(state);
+
+    // When a built dashboard is present, this one instance also serves it at
+    // /app (SPA fallback to index.html) and redirects / there — dashboard + API
+    // + package feed on a single VPS origin.
+    if let Some(dir) = dashboard_dir {
+        if std::path::Path::new(&dir).is_dir() {
+            let index = format!("{dir}/index.html");
+            let spa = ServeDir::new(&dir).fallback(ServeFile::new(index));
+            app = app
+                .nest_service("/app", spa)
+                .route("/", get(|| async { Redirect::permanent("/app/") }));
+            tracing::info!(dir = %dir, "serving dashboard at /app");
+        } else {
+            tracing::warn!(dir = %dir, "dashboard_dir set but not a directory; not serving dashboard");
+        }
+    }
+
+    let app = app.layer(TraceLayer::new_for_http()).layer(cors);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

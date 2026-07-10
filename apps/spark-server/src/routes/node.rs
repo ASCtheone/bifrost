@@ -1,5 +1,6 @@
 use crate::auth::validate_node_key;
 use crate::error::{AppError, AppResult};
+use crate::repo::device_repo;
 use crate::repo::node_repo::{self, HeartbeatUpdate};
 use crate::state::AppState;
 use axum::body::Bytes;
@@ -15,6 +16,56 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/nodes/:nodeId/heartbeat", put(heartbeat))
         .route("/nodes/:nodeId/self", get(get_self))
+        .route("/nodes/:nodeId/desired-config", get(desired_config))
+}
+
+/// GET /nodes/:nodeId/desired-config  (node-key auth)
+///
+/// The WireGuard peers this spark should provision on its UniFi server: one per
+/// enabled device owned by the spark's owner, plus any queued peer deletions.
+async fn desired_config(
+    State(st): State<AppState>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+) -> AppResult<Json<Value>> {
+    let key = node_key_header(&headers)?.to_string();
+    validate_node_key(&st.pool, &node_id, &key).await?;
+
+    let node = node_repo::get_node(&st.pool, &node_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("node not found".into()))?;
+    let owner = node.owner_email.as_str();
+
+    let peers: Vec<Value> = device_repo::query_all_devices(&st.pool)
+        .await?
+        .into_iter()
+        .filter(|d| d.enabled && d.status != "revoked")
+        .filter(|d| owner.is_empty() || d.owner_email == owner)
+        .filter(|d| !d.public_key.is_empty())
+        .map(|d| {
+            let ip = d.assigned_ip.split('/').next().unwrap_or(&d.assigned_ip).to_string();
+            json!({
+                "name": d.name,
+                "publicKey": d.public_key,
+                "assignedIp": d.assigned_ip,
+                "presharedKey": d.preshared_key,
+                // On the server side a peer's allowed-ips is just its tunnel IP.
+                "allowedIps": [format!("{ip}/32")],
+            })
+        })
+        .collect();
+
+    let pending: Vec<String> = node
+        .pending_peer_deletions
+        .as_ref()
+        .and_then(|j| serde_json::from_value::<Vec<String>>(j.0.clone()).ok())
+        .unwrap_or_default();
+
+    Ok(Json(json!({
+        "vpnName": node.spark_vpn_name,
+        "peers": peers,
+        "pendingPeerDeletions": pending,
+    })))
 }
 
 fn node_key_header(headers: &HeaderMap) -> AppResult<&str> {

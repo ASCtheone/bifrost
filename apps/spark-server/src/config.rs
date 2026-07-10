@@ -16,6 +16,10 @@ pub struct Config {
     /// GL.iNet/OpenWrt router add this master as a package source.
     #[serde(default = "default_feed_dir")]
     pub feed_dir: String,
+    /// Directory of the built dashboard SPA. When set, the server serves it at
+    /// `/app` (with SPA fallback) and redirects `/` there — so one VPS instance
+    /// serves the dashboard + API + package feed together.
+    pub dashboard_dir: Option<String>,
     #[serde(default)]
     pub auth: AuthConfig,
 }
@@ -73,6 +77,7 @@ impl Default for Config {
             api_port: default_api_port(),
             database_url: default_database_url(),
             feed_dir: default_feed_dir(),
+            dashboard_dir: None,
             auth: AuthConfig::default(),
         }
     }
