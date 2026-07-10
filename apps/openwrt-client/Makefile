@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bifrost
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=Bifrost
 PKG_LICENSE:=MIT
 
@@ -42,10 +42,9 @@ define Package/bifrost/install
 	$(INSTALL_BIN) ./files/etc/init.d/bifrost $(1)/etc/init.d/bifrost
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/bifrost $(1)/etc/config/bifrost
-	$(INSTALL_DIR) $(1)/www/bifrost
+	$(INSTALL_DIR) $(1)/www/bifrost/cgi-bin
 	$(INSTALL_DATA) ./files/www/bifrost/index.html $(1)/www/bifrost/index.html
-	$(INSTALL_DIR) $(1)/www/cgi-bin
-	$(INSTALL_BIN) ./files/www/cgi-bin/bifrost $(1)/www/cgi-bin/bifrost
+	$(INSTALL_BIN) ./files/www/bifrost/cgi-bin/bifrost $(1)/www/bifrost/cgi-bin/bifrost
 endef
 
 $(eval $(call BuildPackage,bifrost))

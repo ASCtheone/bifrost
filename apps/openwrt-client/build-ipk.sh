@@ -9,7 +9,7 @@
 # Usage: ./build-ipk.sh [output-dir]
 set -euo pipefail
 
-VERSION=0.1.0-1
+VERSION=0.1.0-3
 here="$(cd "$(dirname "$0")" && pwd)"
 outdir="${1:-$here/dist}"
 mkdir -p "$outdir"
@@ -21,7 +21,10 @@ assemble() { # assemble <workdir> <pkg> <version> <arch>
 	echo "2.0" >"$work/debian-binary"
 	ipk="$outdir/${pkg}_${version}_${arch}.ipk"
 	rm -f "$ipk"
-	( cd "$work" && ar rc "$ipk" debian-binary control.tar.gz data.tar.gz )
+	# opkg on OpenWrt/GL.iNet expects the .ipk to be a GZIP-COMPRESSED TAR of the
+	# three members (the legacy ipkg format) — NOT an `ar` archive, which this
+	# opkg rejects as "Malformed package file".
+	( cd "$work" && tar --owner=0 --group=0 -czf "$ipk" ./debian-binary ./control.tar.gz ./data.tar.gz )
 	echo "built: $ipk"
 }
 
@@ -31,7 +34,7 @@ build_bifrost() {
 	local w; w="$(mktemp -d)"
 	mkdir -p "$w/data" "$w/control"
 	cp -r "$here/files/." "$w/data/"
-	chmod 0755 "$w/data/usr/bin/bifrost" "$w/data/etc/init.d/bifrost" "$w/data/www/cgi-bin/bifrost"
+	chmod 0755 "$w/data/usr/bin/bifrost" "$w/data/etc/init.d/bifrost" "$w/data/www/bifrost/cgi-bin/bifrost"
 	chmod 0644 "$w/data/etc/config/bifrost"
 	cat >"$w/control/control" <<EOF
 Package: bifrost
@@ -51,9 +54,25 @@ EOF
 	cat >"$w/control/postinst" <<'EOF'
 #!/bin/sh
 [ -n "${IPKG_INSTROOT}" ] && exit 0
-chmod 0755 /usr/bin/bifrost /etc/init.d/bifrost /www/cgi-bin/bifrost 2>/dev/null
+chmod 0755 /usr/bin/bifrost /etc/init.d/bifrost /www/bifrost/cgi-bin/bifrost 2>/dev/null
+
+# Allow LAN clients to reach the config-page port (8099).
+if ! uci -q get firewall.bifrost_ui >/dev/null 2>&1; then
+	uci set firewall.bifrost_ui=rule
+	uci set firewall.bifrost_ui.name='Bifrost-UI'
+	uci set firewall.bifrost_ui.src='lan'
+	uci set firewall.bifrost_ui.proto='tcp'
+	uci set firewall.bifrost_ui.dest_port='8099'
+	uci set firewall.bifrost_ui.target='ACCEPT'
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+fi
+
+# The service launches its own uhttpd for the config page (GL.iNet's uhttpd
+# won't run add-on instances), so just enable + start it.
 /etc/init.d/bifrost enable 2>/dev/null
-echo "Bifrost installed. Open the config page:  http://<router-ip>/bifrost/"
+/etc/init.d/bifrost restart 2>/dev/null
+echo "Bifrost config page:  http://<router-ip>:8099/"
 exit 0
 EOF
 	cat >"$w/control/prerm" <<'EOF'
@@ -61,6 +80,11 @@ EOF
 [ -n "${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/bifrost stop 2>/dev/null
 /etc/init.d/bifrost disable 2>/dev/null
+if uci -q get firewall.bifrost_ui >/dev/null 2>&1; then
+	uci -q delete firewall.bifrost_ui
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+fi
 exit 0
 EOF
 	chmod 0755 "$w/control/postinst" "$w/control/prerm"
