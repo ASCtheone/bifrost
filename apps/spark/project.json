@@ -1,0 +1,21 @@
+{
+  "name": "spark",
+  "sourceRoot": "apps/spark/src",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo build --release",
+        "cwd": "apps/spark"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo clippy",
+        "cwd": "apps/spark"
+      }
+    }
+  }
+}
