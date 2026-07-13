@@ -1,9 +1,11 @@
 //! Public device provisioning by token (no auth; the token is the credential).
 
+use crate::domain::Device;
 use crate::error::{AppError, AppResult};
 use crate::repo::{device_repo, node_repo};
 use crate::routes::shared;
 use crate::state::AppState;
+use crate::util;
 use axum::extract::{Path, State};
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
@@ -12,6 +14,18 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/provision/:token", get(provision))
         .route("/wg/:token", get(wg_conf))
+}
+
+/// Refuse a device whose registration has lapsed (device-code expiry).
+fn ensure_not_expired(device: &Device) -> AppResult<()> {
+    if let Some(exp) = device.expires_at.as_deref() {
+        if !exp.is_empty() && exp <= util::now_iso().as_str() {
+            return Err(AppError::Forbidden(
+                "Device registration has expired — reset it in the dashboard".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// GET /wg/{token} — the device's primary WireGuard config as a downloadable
@@ -32,6 +46,7 @@ async fn wg_conf(
     if device.status == "revoked" {
         return Err(AppError::Forbidden("Device has been revoked".into()));
     }
+    ensure_not_expired(&device)?;
     let all_nodes = node_repo::query_all_nodes(&st.pool).await?;
     let configs = shared::build_device_configs(&device, &all_nodes);
     let conf = configs
@@ -62,6 +77,7 @@ async fn provision(State(st): State<AppState>, Path(token): Path<String>) -> App
     if device.status == "revoked" {
         return Err(AppError::Forbidden("Device has been revoked".into()));
     }
+    ensure_not_expired(&device)?;
 
     let all_nodes = node_repo::query_all_nodes(&st.pool).await?;
     let configs = shared::build_device_configs(&device, &all_nodes);

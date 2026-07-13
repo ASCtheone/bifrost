@@ -117,6 +117,10 @@ pub struct Device {
     pub owner_email: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Optional registration expiry (ISO-8601). None = never expires. Past =
+    /// the device is treated as expired and provisioning is refused.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 // ── Peer (WireGuard peer) ────────────────────────────────────────

@@ -74,3 +74,17 @@ pub fn adoption_code() -> String {
         chars[0], chars[1], chars[2], chars[3], chars[4], chars[5], chars[6], chars[7], chars[8],
     )
 }
+
+/// A human-friendly device-pairing code: 8 chars from an unambiguous alphabet,
+/// formatted `XXXX-XXXX`.
+pub fn device_code() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 32 chars, no O/0/1/I
+    let chars: Vec<char> = random_bytes(8)
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect();
+    format!(
+        "{}{}{}{}-{}{}{}{}",
+        chars[0], chars[1], chars[2], chars[3], chars[4], chars[5], chars[6], chars[7],
+    )
+}

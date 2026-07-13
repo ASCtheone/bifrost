@@ -14,13 +14,13 @@ pub async fn get_device(pool: &SqlitePool, device_id: &str) -> AppResult<Option<
 const DEVICE_COLS: &str = "device_id, node_id, name, type, status, provision_method, \
     provision_token, assigned_ip, public_key, private_key, preshared_key, server_public_key, \
     server_endpoint, server_port, dns, allowed_ips, unifi_peer_id, enabled, last_seen, \
-    created_by, owner_email, created_at, updated_at";
+    created_by, owner_email, created_at, updated_at, expires_at";
 
 /// Insert-or-replace (Dynamo `Put` overwrites).
 pub async fn put_device(pool: &SqlitePool, d: &Device) -> AppResult<()> {
     let sql = format!(
         "INSERT OR REPLACE INTO devices ({DEVICE_COLS}) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     );
     sqlx::query::<Sqlite>(&sql)
         .bind(&d.device_id)
@@ -46,9 +46,25 @@ pub async fn put_device(pool: &SqlitePool, d: &Device) -> AppResult<()> {
         .bind(&d.owner_email)
         .bind(&d.created_at)
         .bind(&d.updated_at)
+        .bind(&d.expires_at)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Set (or clear, with `None`) a device's registration expiry.
+pub async fn set_device_expiry(
+    pool: &SqlitePool,
+    device_id: &str,
+    expires_at: Option<&str>,
+) -> AppResult<u64> {
+    let res = sqlx::query("UPDATE devices SET expires_at = ?, updated_at = ? WHERE device_id = ?")
+        .bind(expires_at)
+        .bind(now_iso())
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
 }
 
 pub async fn delete_device(pool: &SqlitePool, device_id: &str) -> AppResult<()> {

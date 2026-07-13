@@ -125,6 +125,7 @@ async fn create_device(
         owner_email: auth.email.clone(),
         created_at: now.clone(),
         updated_at: now,
+        expires_at: None,
     };
     device_repo::put_device(&st.pool, &device).await?;
 

@@ -3,8 +3,10 @@
 
 use crate::domain::{Device, Node};
 use crate::error::AppResult;
-use crate::repo::{share_repo, user_repo};
+use crate::repo::{device_repo, node_repo, share_repo, user_repo};
+use crate::util;
 use crate::wg::{self, WgConfigParams};
+use sqlx::types::Json as SqlxJson;
 use sqlx::SqlitePool;
 
 /// The WireGuard server details for a node, pulled from its reported
@@ -139,4 +141,58 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
         });
     }
     out
+}
+
+/// Create a new device for an owner against their first eligible spark. Returns
+/// `None` if the owner has no adopted sparks. Used by device-code registration
+/// and first-login auto-provisioning.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_device_for_owner(
+    pool: &SqlitePool,
+    owner_email: &str,
+    created_by: &str,
+    name: &str,
+    device_type: &str,
+    provision_method: &str,
+    expires_at: Option<String>,
+) -> AppResult<Option<Device>> {
+    let all_nodes = node_repo::query_all_nodes(pool).await?;
+    let owner_nodes = owned_nodes(pool, owner_email, &all_nodes).await?;
+    let Some(node) = owner_nodes.first() else {
+        return Ok(None);
+    };
+    let server = spark_server_for(node);
+    let device_id = util::device_id();
+    let kp = wg::generate_keypair();
+    let now = util::now_iso();
+    let assigned_ip = wg::assign_ip(&device_id, server.as_ref().map(|s| s.server_address.as_str()));
+
+    let device = Device {
+        device_id,
+        node_id: node.node_id.clone(),
+        name: name.to_string(),
+        device_type: device_type.to_string(),
+        status: "pending".into(),
+        provision_method: provision_method.to_string(),
+        provision_token: Some(util::provision_token()),
+        assigned_ip,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        preshared_key: wg::generate_preshared_key(),
+        server_public_key: server.as_ref().map(|s| s.public_key.clone()).unwrap_or_default(),
+        server_endpoint: node.controller_url.clone(),
+        server_port: server.as_ref().map(|s| s.server_port).unwrap_or(51830),
+        dns: SqlxJson(vec!["1.1.1.1".into(), "8.8.8.8".into()]),
+        allowed_ips: SqlxJson(vec!["0.0.0.0/0".into()]),
+        unifi_peer_id: None,
+        enabled: true,
+        last_seen: None,
+        created_by: created_by.to_string(),
+        owner_email: owner_email.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+        expires_at,
+    };
+    device_repo::put_device(pool, &device).await?;
+    Ok(Some(device))
 }

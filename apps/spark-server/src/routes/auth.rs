@@ -230,6 +230,7 @@ async fn auth_provision(
             owner_email: auth.email.clone(),
             created_at: now.clone(),
             updated_at: now,
+            expires_at: None,
         };
         device_repo::put_device(&st.pool, &new_device).await?;
         device = Some(new_device);

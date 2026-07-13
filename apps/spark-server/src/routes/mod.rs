@@ -11,6 +11,7 @@ pub mod feed;
 pub mod health;
 pub mod node; // spark-agent node-key routes (heartbeat, self)
 pub mod nodes; // admin node management
+pub mod pairing; // device-code pairing
 pub mod peers;
 pub mod provision;
 pub mod shared;
@@ -29,6 +30,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(devices::routes())
         .merge(peers::routes())
         .merge(provision::routes())
+        .merge(pairing::routes())
         .merge(config::routes())
         .merge(users::routes())
         .merge(admin::routes())
