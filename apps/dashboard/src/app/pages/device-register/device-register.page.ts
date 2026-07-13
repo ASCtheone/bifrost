@@ -113,13 +113,33 @@ export class DeviceRegisterPage implements OnInit {
   ngOnInit(): void {
     const qp = this.route.snapshot.queryParamMap;
     this.code = (qp.get('deviceCode') ?? '').toUpperCase();
-    this.callback.set(qp.get('callback') ?? '');
 
     // Must be signed in to tie a device to an account.
     if (!this.auth.isLoggedIn()) {
-      const returnUrl = this.router.url; // preserves deviceCode + callback query
+      const returnUrl = this.router.url; // preserves the deviceCode query
       void this.router.navigate(['/login'], { queryParams: { returnUrl } });
     }
+  }
+
+  /** A callback must target a private/LAN address (defense-in-depth; the server
+   *  already dropped non-private callbacks when the code was created). */
+  private isPrivateCallback(url: string): boolean {
+    let h: string;
+    try {
+      const u = new URL(url);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+      h = u.hostname;
+    } catch {
+      return false;
+    }
+    if (h === 'localhost' || h === '::1') return true;
+    const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      return a === 10 || a === 127 || a === 169 && b === 254
+        || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31;
+    }
+    return /^f[cd][0-9a-f]{2}:/i.test(h) || /^fe80:/i.test(h); // IPv6 ULA / link-local
   }
 
   upper(value: string): void {
@@ -130,26 +150,28 @@ export class DeviceRegisterPage implements OnInit {
     this.error.set('');
     this.loading.set(true);
     try {
-      const res = await this.api.post<{ provisionToken: string; name: string; deviceId: string }>(
-        '/device/register',
-        {
-          deviceCode: this.code.trim(),
-          name: this.name.trim() || undefined,
-          expiresInDays: this.expiresInDays || undefined,
-        },
-      );
+      const res = await this.api.post<{
+        provisionToken: string; name: string; deviceId: string; callbackUrl: string | null;
+      }>('/device/register', {
+        deviceCode: this.code.trim(),
+        name: this.name.trim() || undefined,
+        expiresInDays: this.expiresInDays || undefined,
+      });
       this.token.set(res.provisionToken);
       this.deviceName.set(res.name);
-      this.done.set(true);
 
-      // Hand the token back to the device via its callback, if it provided one.
-      const cb = this.callback();
-      if (cb && /^https?:\/\//i.test(cb)) {
+      // Hand the token back to the device via the callback it registered with —
+      // server-validated as private/LAN, and re-checked here. Otherwise the user
+      // enters the token on the device manually.
+      const cb = res.callbackUrl ?? '';
+      if (cb && this.isPrivateCallback(cb)) {
+        this.callback.set(cb);
         const sep = cb.includes('?') ? '&' : '?';
         const url = `${cb}${sep}action=token&token=${encodeURIComponent(res.provisionToken)}`
           + `&deviceId=${encodeURIComponent(res.deviceId)}&name=${encodeURIComponent(res.name)}`;
         setTimeout(() => { window.location.href = url; }, 1200);
       }
+      this.done.set(true);
     } catch (err) {
       this.error.set((err as { message?: string }).message ?? 'Registration failed');
     } finally {

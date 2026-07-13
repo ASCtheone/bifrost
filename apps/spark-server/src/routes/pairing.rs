@@ -20,6 +20,37 @@ use serde_json::{json, Value};
 /// Pending pairing codes live 15 minutes.
 const CODE_TTL_SECS: i64 = 15 * 60;
 
+/// The device's callback (where the browser is redirected with the token) must
+/// point at a private/LAN address — the device is on the user's own network.
+/// This stops a malicious code from redirecting the token to an off-site host.
+fn callback_is_private(url: &str) -> bool {
+    use std::net::IpAddr;
+    let rest = match url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) {
+        Some(r) => r,
+        None => return false,
+    };
+    // authority = host[:port], before the first '/'; drop any userinfo@.
+    let authority = rest.split('/').next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("") // [ipv6]:port
+    } else {
+        authority.split(':').next().unwrap_or(authority) // host or host:port
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        Ok(IpAddr::V6(v6)) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // ULA  fc00::/7
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
+        Err(_) => false, // reject hostnames — they can resolve anywhere
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/device/code", post(create_code))
@@ -48,6 +79,13 @@ async fn create_code(
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let _ = device_code_repo::delete_expired(&st.pool, &util::now_iso()).await; // best-effort GC
 
+    // Only keep a callback that targets a private/LAN address; otherwise the
+    // device pairs via polling. Prevents off-site token redirection.
+    let callback = req.callback_url.as_deref().filter(|c| callback_is_private(c));
+    if req.callback_url.is_some() && callback.is_none() {
+        tracing::warn!("dropping non-private device-code callback");
+    }
+
     let code = util::device_code();
     let now = util::now_iso();
     let expires = util::iso_in(CODE_TTL_SECS);
@@ -55,7 +93,7 @@ async fn create_code(
         &st.pool,
         &code,
         req.name.as_deref().unwrap_or(""),
-        req.callback_url.as_deref(),
+        callback,
         &now,
         &expires,
     )
