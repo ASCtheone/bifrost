@@ -23,6 +23,8 @@ Thumbs.db
 # Secrets — never commit
 .npmrc
 **/.bifrost-key
+/secrets/
+secrets/fontawesome_token
 *.pem
 *.p12
 

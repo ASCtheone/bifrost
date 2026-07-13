@@ -1,0 +1,81 @@
+# Bifrost production stack for a single VPS.
+#
+#   spark-server  → dashboard (/bifrost) + REST API (/) + opkg feed (/feed)
+#   cloudflared   → Cloudflare Tunnel: publishes both domains with edge TLS,
+#                   no open ports (default ingress)
+#   caddy         → alternative direct-exposure ingress with its own TLS
+#                   (opt-in: `docker compose --profile caddy up -d`)
+#
+# Setup:
+#   1. cp .env.example .env           and fill in BIFROST_JWT_SECRET, TUNNEL_TOKEN, DOMAINs
+#   2. mkdir -p secrets && echo "<fontawesome-pro-token>" > secrets/fontawesome_token
+#   3. docker compose up -d --build
+#
+# With Cloudflare Tunnel, map both public hostnames to http://spark-server:8443
+# in the Cloudflare Zero Trust dashboard (Tunnels → Public hostnames):
+#   ${DASHBOARD_DOMAIN} → http://spark-server:8443
+#   ${LANDING_DOMAIN}   → http://spark-server:8443
+
+services:
+  spark-server:
+    build:
+      context: .
+      dockerfile: apps/spark-server/Dockerfile
+      secrets:
+        - fontawesome_token
+    environment:
+      # Secret — supplied from .env, never baked into the image.
+      BIFROST_JWT_SECRET: ${BIFROST_JWT_SECRET:?set BIFROST_JWT_SECRET in .env}
+      # Paths/ports have image defaults; listed here for visibility.
+      BIFROST_DATABASE_URL: sqlite:///app/data/bifrost.db
+      BIFROST_DASHBOARD_DIR: /app/dashboard
+      BIFROST_FEED_DIR: /app/feed
+      BIFROST_BIND_ADDR: 0.0.0.0
+      BIFROST_API_PORT: "8443"
+      RUST_LOG: ${RUST_LOG:-spark_server=info,tower_http=info,sqlx=warn}
+    volumes:
+      - bifrost-data:/app/data     # sqlite database (persisted)
+      - ./feed:/app/feed           # opkg package feed served at /feed
+    expose:
+      - "8443"
+    restart: unless-stopped
+
+  # Default ingress: an outbound-only Cloudflare Tunnel. No inbound ports; TLS
+  # and hostname routing are handled at Cloudflare's edge.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    depends_on:
+      - spark-server
+    restart: unless-stopped
+
+  # Alternative ingress for direct exposure (no Cloudflare). Opt in with:
+  #   docker compose --profile caddy up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["caddy"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      LANDING_DOMAIN: ${LANDING_DOMAIN:?set LANDING_DOMAIN in .env}
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:?set DASHBOARD_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - spark-server
+    restart: unless-stopped
+
+secrets:
+  fontawesome_token:
+    file: ./secrets/fontawesome_token
+
+volumes:
+  bifrost-data:
+  caddy-data:
+  caddy-config:

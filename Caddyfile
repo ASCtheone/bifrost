@@ -1,0 +1,20 @@
+# Bifrost reverse proxy — automatic HTTPS for both domains.
+# Domains + ACME email come from the environment (see .env / docker-compose.yml).
+
+{
+	email {$ACME_EMAIL}
+}
+
+# Dashboard + API + package feed (same origin — the dashboard's prod build calls
+# the API relative to its own host, so everything must land on spark-server).
+{$DASHBOARD_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy spark-server:8443
+}
+
+# Public marketing landing. Same app (the landing route lives under /bifrost);
+# the "Connect" button then sends visitors to the dashboard domain.
+{$LANDING_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy spark-server:8443
+}

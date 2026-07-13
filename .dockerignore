@@ -1,0 +1,29 @@
+# Keep the build context lean — everything here is rebuilt in-image or irrelevant.
+**/node_modules
+**/target
+**/dist
+**/.angular
+**/.nx
+.git
+.github
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/data
+.env
+.env.*
+secrets/
+# Never let a local FontAwesome token leak into the image via COPY — it is
+# injected as a build secret instead.
+**/.npmrc
+.npmrc
+scratchpad/
+**/*.log
+# Old AWS/SST artifacts not used by the container build.
+infra/
+sst.config.ts
+sst-env.d.ts
+.sst/
+apps/spark-agent/
+apps/spark-agent-2/
+apps/spark-lambda/
