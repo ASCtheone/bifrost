@@ -74,26 +74,28 @@ async fn main() -> anyhow::Result<()> {
     // apps:
     //   /bifrost/api/*   → REST API
     //   /bifrost/feed/*  → opkg package feed
-    //   /bifrost/*       → dashboard SPA (deep links fall back to index.html)
+    //   /bifrost, /bifrost/*  → dashboard SPA (deep links fall back to index.html)
     // The dashboard's base-href is /bifrost/ and it calls the API at
     // /bifrost/api, so it all works on one origin under one prefix.
-    let mut bifrost = Router::new()
-        .nest("/api", routes::api_router())
-        .merge(routes::feed::routes()); // feed route is /feed/:file → /bifrost/feed/:file
+    let mut app = Router::new()
+        .nest("/bifrost/api", routes::api_router())
+        .nest("/bifrost/feed", routes::feed::routes());
 
+    // Serve the SPA as a catch-all under /bifrost (this correctly handles the
+    // bare "/bifrost/" root, unlike a nested fallback); the more-specific
+    // /bifrost/api and /bifrost/feed nests above take precedence.
     if let Some(dir) = &dashboard_dir {
         if std::path::Path::new(dir).is_dir() {
             let index = format!("{dir}/index.html");
             let spa = ServeDir::new(dir).fallback(ServeFile::new(index));
-            bifrost = bifrost.fallback_service(spa);
+            app = app.nest_service("/bifrost", spa);
             tracing::info!(dir = %dir, "serving dashboard at /bifrost");
         } else {
             tracing::warn!(dir = %dir, "dashboard_dir set but not a directory; not serving dashboard");
         }
     }
 
-    let app = Router::new()
-        .nest("/bifrost", bifrost)
+    let app = app
         .route("/", get(|| async { Redirect::permanent("/bifrost/") }))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

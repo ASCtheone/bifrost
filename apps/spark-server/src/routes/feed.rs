@@ -11,8 +11,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 
+/// Feed routes, relative — mounted at `/bifrost/feed` by `main`.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/feed/:file", get(serve))
+    Router::new().route("/:file", get(serve))
 }
 
 async fn serve(State(st): State<AppState>, Path(file): Path<String>) -> AppResult<Response> {
