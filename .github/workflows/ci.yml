@@ -4,108 +4,51 @@ on:
   push:
     branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  lint-and-test-ts:
-    name: TypeScript Lint & Test
+  # Core correctness: build + unit-test the Rust crates that make up the current
+  # architecture (control plane + on-site spark). No secrets required.
+  rust:
+    name: Rust build & test (${{ matrix.crate }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [apps/spark-server, apps/spark]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root deps
-        run: npm ci
-
-      - name: Install unifi-connect deps
-        run: cd libs/unifi-connect && npm ci
-
-      - name: Type check unifi-connect
-        run: cd libs/unifi-connect && npx tsc --noEmit
-
-      - name: Test unifi-connect
-        run: cd libs/unifi-connect && npx vitest run
-
-      - name: Build dynamo-schema
-        run: npx nx build dynamo-schema
-
-      - name: Type check dynamo-schema
-        run: cd libs/dynamo-schema && npx tsc --noEmit
-
-      - name: Build dynamo-repo
-        run: npx nx build dynamo-repo
-
-      - name: Type check dynamo-repo
-        run: cd libs/dynamo-repo && npx tsc --noEmit
-
-      - name: Type check spark-client
-        run: cd libs/spark-client && npx tsc --noEmit
-
-      - name: Test spark-client
-        run: cd libs/spark-client && npx vitest run
-
-      - name: Type check spark-lambda
-        run: cd apps/spark-lambda && npx tsc --noEmit
-
-      - name: Type check spark-agent
-        run: cd apps/spark-agent && npx tsc --noEmit
-
-      - name: Test spark-agent
-        run: cd apps/spark-agent && npx vitest run
-
-  build-dashboard:
-    name: Build Dashboard
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root deps
-        run: npm ci
-
+          workspaces: ${{ matrix.crate }}
       - name: Build
-        run: cd apps/dashboard && npx ng build --configuration production
+        run: cargo build --manifest-path ${{ matrix.crate }}/Cargo.toml
+      - name: Test
+        run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dashboard-dist
-          path: apps/dashboard/dist/dashboard/
-
-  deploy-sst:
-    name: Deploy via SST
-    needs: [lint-and-test-ts, build-dashboard]
+  # Prove the deployable image builds (dashboard + server). The dashboard pulls
+  # FontAwesome Pro packages, so this needs the FONTAWESOME_TOKEN secret; when it
+  # isn't set (e.g. on forks) the job no-ops with a warning instead of failing.
+  image:
+    name: Build server image
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    env:
+      FA_TOKEN: ${{ secrets.FONTAWESOME_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-
-      - name: Install deps
-        run: npm ci
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: dashboard-dist
-          path: apps/dashboard/dist/dashboard/
-
-      - name: Deploy
-        run: npx sst deploy --stage production
+      - name: Skip notice (no token)
+        if: ${{ env.FA_TOKEN == '' }}
+        run: echo "::warning::FONTAWESOME_TOKEN secret not set — skipping dashboard/image build. Add it in Settings → Secrets and variables → Actions to enable."
+      - name: Build unified server image (dashboard + Rust)
+        if: ${{ env.FA_TOKEN != '' }}
+        run: |
+          printf '%s' "$FA_TOKEN" > fa_token
+          DOCKER_BUILDKIT=1 docker build \
+            -f apps/spark-server/Dockerfile \
+            --secret id=fontawesome_token,src=fa_token \
+            -t bifrost-server:ci .
+          rm -f fa_token
