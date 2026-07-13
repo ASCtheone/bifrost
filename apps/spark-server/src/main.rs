@@ -31,7 +31,8 @@ async fn main() -> anyhow::Result<()> {
 
     let config_path =
         std::env::var("BIFROST_CONFIG").unwrap_or_else(|_| "bifrost-control.toml".into());
-    let config = config::Config::load(&config_path)?;
+    let mut config = config::Config::load(&config_path)?;
+    apply_env_overrides(&mut config);
     tracing::info!(node_id = %config.node_id, "starting bifrost control plane");
 
     let pool = db::init_pool(&config.database_url).await?;
@@ -70,16 +71,17 @@ async fn main() -> anyhow::Result<()> {
     let mut app = routes::router(state);
 
     // When a built dashboard is present, this one instance also serves it at
-    // /app (SPA fallback to index.html) and redirects / there — dashboard + API
-    // + package feed on a single VPS origin.
+    // /bifrost (SPA fallback to index.html) and redirects / there — dashboard +
+    // API + package feed on a single VPS origin. The base-href is /bifrost/ so
+    // the app is reachable at e.g. dash.asc.ninja/bifrost.
     if let Some(dir) = dashboard_dir {
         if std::path::Path::new(&dir).is_dir() {
             let index = format!("{dir}/index.html");
             let spa = ServeDir::new(&dir).fallback(ServeFile::new(index));
             app = app
-                .nest_service("/app", spa)
-                .route("/", get(|| async { Redirect::permanent("/app/") }));
-            tracing::info!(dir = %dir, "serving dashboard at /app");
+                .nest_service("/bifrost", spa)
+                .route("/", get(|| async { Redirect::permanent("/bifrost/") }));
+            tracing::info!(dir = %dir, "serving dashboard at /bifrost");
         } else {
             tracing::warn!(dir = %dir, "dashboard_dir set but not a directory; not serving dashboard");
         }
@@ -94,4 +96,29 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(listener, app).await.context("server error")?;
     Ok(())
+}
+
+/// Let environment variables override the TOML config, so a container can be
+/// configured (and handed its secrets) entirely through the environment without
+/// baking anything into the image. Empty values are ignored.
+fn apply_env_overrides(config: &mut config::Config) {
+    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if let Some(v) = set("BIFROST_JWT_SECRET") {
+        config.auth.jwt_secret = Some(v);
+    }
+    if let Some(v) = set("BIFROST_DATABASE_URL") {
+        config.database_url = v;
+    }
+    if let Some(v) = set("BIFROST_DASHBOARD_DIR") {
+        config.dashboard_dir = Some(v);
+    }
+    if let Some(v) = set("BIFROST_FEED_DIR") {
+        config.feed_dir = v;
+    }
+    if let Some(v) = set("BIFROST_BIND_ADDR") {
+        config.bind_addr = v;
+    }
+    if let Some(v) = set("BIFROST_API_PORT").and_then(|v| v.parse().ok().map(|_: u16| v)) {
+        config.api_port = v.parse().unwrap();
+    }
 }

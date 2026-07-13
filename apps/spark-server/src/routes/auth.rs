@@ -1,7 +1,7 @@
 //! Local authentication routes: password login (issues our own JWT) and the
 //! device auth-provision endpoint. Also owns first-run admin bootstrap.
 
-use crate::auth::{password, AdminAuth};
+use crate::auth::{password, AdminAuth, Auth};
 use crate::config::Config;
 use crate::domain::{Device, User};
 use crate::error::{AppError, AppResult};
@@ -12,7 +12,10 @@ use crate::util;
 use crate::wg;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::{routing::post, Json, Router};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::types::Json as SqlxJson;
@@ -20,8 +23,117 @@ use sqlx::SqlitePool;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/auth/status", get(status))
+        .route("/auth/setup", post(setup))
         .route("/auth/login", post(login))
+        .route("/auth/change-password", post(change_password))
         .route("/auth/provision", post(auth_provision))
+}
+
+// ── GET /auth/status (public) ───────────────────────────────────
+// Lets the dashboard decide whether to show the first-run setup screen.
+
+async fn status(State(st): State<AppState>) -> AppResult<Json<Value>> {
+    let needs_setup = user_repo::count_users(&st.pool).await? == 0;
+    Ok(Json(json!({ "needsSetup": needs_setup })))
+}
+
+// ── POST /auth/setup (public, first run only) ───────────────────
+// Creates the very first account (super admin) when the user store is empty.
+// Refuses once any user exists, so it can't be used to escalate later.
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupReq {
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    password: String,
+}
+
+async fn setup(State(st): State<AppState>, Json(req): Json<SetupReq>) -> AppResult<Json<Value>> {
+    if user_repo::count_users(&st.pool).await? > 0 {
+        return Err(AppError::Forbidden("Setup has already been completed".into()));
+    }
+    let email = req
+        .email
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty())
+        .ok_or_else(|| AppError::BadRequest("Email is required".into()))?;
+    let issues = password::password_issues(&req.password);
+    if !issues.is_empty() {
+        return Err(AppError::BadRequest(format!("Password needs {}", issues.join(", "))));
+    }
+
+    let now = util::now_iso();
+    let user = User {
+        user_id: util::ulid(),
+        username: email.split('@').next().unwrap_or(&email).to_string(),
+        email: email.clone(),
+        display_name: req
+            .display_name
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| email.clone()),
+        password_hash: password::hash_password(&req.password)?,
+        groups: SqlxJson(vec!["admin".into(), "superadmin".into()]),
+        enabled: true,
+        status: "CONFIRMED".into(),
+        owner_email: String::new(),
+        must_change: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    user_repo::create_user(&st.pool, &user).await?;
+    tracing::info!(email = %email, "first-run setup: created super admin");
+
+    let token = st.jwt.issue(&user.user_id, &user.email, user.groups.0.clone())?;
+    Ok(Json(json!({
+        "token": token,
+        "idToken": token,
+        "email": user.email,
+        "displayName": user.display_name,
+        "groups": user.groups.0,
+        "mustChangePassword": false,
+    })))
+}
+
+// ── POST /auth/change-password (any authed user) ────────────────
+// Used to clear a temporary password on first login, and for self-service
+// password changes. Requires the current password.
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangePasswordReq {
+    current_password: String,
+    new_password: String,
+}
+
+async fn change_password(
+    State(st): State<AppState>,
+    Auth(auth): Auth,
+    Json(req): Json<ChangePasswordReq>,
+) -> AppResult<Json<Value>> {
+    let user = user_repo::get_user_by_email(&st.pool, &auth.email)
+        .await?
+        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+
+    if !password::verify_password(&req.current_password, &user.password_hash) {
+        return Err(AppError::Unauthorized("Current password is incorrect".into()));
+    }
+    let issues = password::password_issues(&req.new_password);
+    if !issues.is_empty() {
+        return Err(AppError::BadRequest(format!("Password needs {}", issues.join(", "))));
+    }
+    if password::verify_password(&req.new_password, &user.password_hash) {
+        return Err(AppError::BadRequest(
+            "New password must differ from the current one".into(),
+        ));
+    }
+
+    let hash = password::hash_password(&req.new_password)?;
+    user_repo::set_password(&st.pool, &user.username, &hash, false).await?;
+    Ok(Json(json!({ "success": true })))
 }
 
 // ── POST /auth/login (public) ───────────────────────────────────

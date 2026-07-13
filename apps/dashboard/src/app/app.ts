@@ -238,13 +238,14 @@ export class App implements OnInit, OnDestroy {
       this.setUserInfo(user.email);
     }
 
-    // Watch for auth changes
+    // Watch for auth changes. Only kick unauthenticated users off *protected*
+    // routes — the landing, login and setup pages are public.
     const checkAuth = () => {
       const u = this.authService.user();
       this.loggedIn.set(!!u);
       if (u) {
         this.setUserInfo(u.email);
-      } else {
+      } else if (!this.isPublicRoute()) {
         this.router.navigate(['/login']);
       }
     };
@@ -259,6 +260,12 @@ export class App implements OnInit, OnDestroy {
   }
 
   private authCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Routes reachable without a session — must not be force-redirected to login. */
+  private isPublicRoute(): boolean {
+    const url = this.router.url.split('?')[0];
+    return url === '/' || url.startsWith('/login') || url.startsWith('/setup');
+  }
 
   ngOnDestroy(): void {
     if (this.authCheckTimer) clearInterval(this.authCheckTimer);

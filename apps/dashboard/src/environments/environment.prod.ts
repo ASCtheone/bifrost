@@ -6,4 +6,9 @@ export const environment = {
   apiUrl: '',
   // spark-server is HTTP-only (no WebSocket push).
   wsUrl: '',
+  // The public landing and the dashboard live on different subdomains in prod.
+  // Both are configurable here so the "Connect" button and cross-links follow
+  // the deployment without code changes.
+  landingUrl: 'https://asc.ninja/bifrost',
+  dashboardUrl: 'https://dash.asc.ninja/bifrost/login',
 };

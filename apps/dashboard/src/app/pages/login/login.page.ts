@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, inject, signal, OnInit } from '@angular/core';
 import { Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service';
@@ -22,17 +22,11 @@ import { AuthService } from '../../services/auth.service';
             <label>Password</label>
             <input type="password" [(ngModel)]="password" name="password" placeholder="Enter password" required />
           </div>
-          @if (needsNewPassword()) {
-            <div class="field">
-              <label>New Password</label>
-              <input type="password" [(ngModel)]="newPassword" name="newPassword" placeholder="Choose a new password" required />
-            </div>
-          }
           @if (error()) {
             <div class="error-msg">{{ error() }}</div>
           }
           <button type="submit" class="btn-login" [disabled]="loading()">
-            {{ loading() ? 'Signing in...' : needsNewPassword() ? 'Set Password' : 'Sign In' }}
+            {{ loading() ? 'Signing in...' : 'Sign In' }}
           </button>
         </form>
       </div>
@@ -92,51 +86,32 @@ import { AuthService } from '../../services/auth.service';
     .btn-login:disabled { opacity: 0.5; cursor: not-allowed; }
   `],
 })
-export class LoginPage {
+export class LoginPage implements OnInit {
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
 
   email = '';
   password = '';
-  newPassword = '';
   error = signal('');
   loading = signal(false);
-  needsNewPassword = signal(false);
+
+  async ngOnInit(): Promise<void> {
+    // First run: no account exists yet — send the operator to the setup screen.
+    if (await this.authService.checkSetupNeeded()) {
+      await this.router.navigate(['/setup']);
+    }
+  }
 
   async login(): Promise<void> {
     this.error.set('');
     this.loading.set(true);
 
     try {
-      if (this.needsNewPassword()) {
-        await this.authService.completeNewPassword(this.newPassword);
-        await this.router.navigate(['/dashboard']);
-      } else {
-        const result = await this.authService.login(this.email, this.password);
-        if (result.needsNewPassword) {
-          this.needsNewPassword.set(true);
-        } else {
-          await this.router.navigate(['/dashboard']);
-        }
-      }
+      const result = await this.authService.login(this.email, this.password);
+      // Accounts created with a temporary password must change it first.
+      await this.router.navigate([result.needsNewPassword ? '/change-password' : '/dashboard']);
     } catch (err) {
-      const msg = (err as { name?: string; message?: string });
-      switch (msg.name) {
-        case 'NotAuthorizedException':
-          this.error.set('Incorrect email or password');
-          break;
-        case 'UserNotFoundException':
-          this.error.set('No account found with this email');
-          break;
-        case 'UserNotConfirmedException':
-          this.error.set('Account not confirmed — check your email');
-          break;
-        case 'InvalidPasswordException':
-          this.error.set('Password does not meet requirements (12+ chars, uppercase, lowercase, number)');
-          break;
-        default:
-          this.error.set(msg.message ?? 'Login failed');
-      }
+      this.error.set((err as { message?: string }).message ?? 'Login failed');
     } finally {
       this.loading.set(false);
     }

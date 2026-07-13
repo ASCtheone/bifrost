@@ -3,9 +3,26 @@ import { authGuard, adminGuard, superadminGuard } from './guards/auth.guard';
 
 export const routes: Routes = [
   {
+    path: '',
+    pathMatch: 'full',
+    loadComponent: () =>
+      import('./pages/landing/landing.page').then((m) => m.LandingPage),
+  },
+  {
     path: 'login',
     loadComponent: () =>
       import('./pages/login/login.page').then((m) => m.LoginPage),
+  },
+  {
+    path: 'setup',
+    loadComponent: () =>
+      import('./pages/setup/setup.page').then((m) => m.SetupPage),
+  },
+  {
+    path: 'change-password',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./pages/change-password/change-password.page').then((m) => m.ChangePasswordPage),
   },
   {
     path: '',
@@ -40,7 +57,6 @@ export const routes: Routes = [
       },
       { path: 'nodes', redirectTo: 'sparks', pathMatch: 'full' },
       { path: 'admin/nodes', redirectTo: 'admin/sparks', pathMatch: 'full' },
-      { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
     ],
   },
   { path: '**', redirectTo: '' },

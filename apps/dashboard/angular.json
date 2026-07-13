@@ -72,7 +72,7 @@
                 }
               ],
               "outputHashing": "all",
-              "baseHref": "/app/",
+              "baseHref": "/bifrost/",
               "fileReplacements": [
                 {
                   "replace": "src/environments/environment.ts",

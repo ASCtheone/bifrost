@@ -61,15 +61,54 @@ export class AuthService {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error((err as { error?: string }).error ?? 'Login failed');
     }
-    const data = (await res.json()) as { token: string };
+    const data = (await res.json()) as { token: string; mustChangePassword?: boolean };
     this.setSession(data.token);
-    // The server issues a usable token even when a password change is pending,
-    // so there is no separate new-password challenge step.
-    return { needsNewPassword: false };
+    // The server issues a usable token even with a change pending; the UI routes
+    // the user through the forced change screen before the dashboard.
+    return { needsNewPassword: data.mustChangePassword === true };
   }
 
-  async completeNewPassword(_newPassword: string): Promise<void> {
-    // No challenge flow in local auth; login already established the session.
+  /** True when no account exists yet — the app shows the first-run setup screen. */
+  async checkSetupNeeded(): Promise<boolean> {
+    try {
+      const res = await fetch(`${environment.apiUrl}/auth/status`);
+      if (!res.ok) return false;
+      const data = (await res.json()) as { needsSetup?: boolean };
+      return data.needsSetup === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** First-run setup: create the initial super admin and start a session. */
+  async setup(email: string, displayName: string, password: string): Promise<void> {
+    const res = await fetch(`${environment.apiUrl}/auth/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, displayName, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error?: string }).error ?? 'Setup failed');
+    }
+    const data = (await res.json()) as { token: string };
+    this.setSession(data.token);
+  }
+
+  /** Change the signed-in user's password (clears any forced-change flag). */
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    const res = await fetch(`${environment.apiUrl}/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${await this.getToken()}`,
+      },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error?: string }).error ?? 'Password change failed');
+    }
   }
 
   async logout(): Promise<void> {
