@@ -29,18 +29,66 @@ docker compose up -d --build
 
 ### Cloudflare Tunnel setup
 
-1. In the Cloudflare Zero Trust dashboard → **Networks → Tunnels**, create a
-   tunnel and copy its **token** into `TUNNEL_TOKEN` in `.env`.
-2. Add two **public hostnames** to the tunnel, both pointing at the origin
-   service `http://spark-server:8443`:
-   - `${DASHBOARD_DOMAIN}` → `http://spark-server:8443`
-   - `${LANDING_DOMAIN}`   → `http://spark-server:8443`
+In the Cloudflare Zero Trust dashboard → **Networks → Tunnels**, create a tunnel
+and copy its **token** into `TUNNEL_TOKEN` in `.env`. Then add its public
+hostnames.
+
+**Key routing fact:** `spark-server` serves the dashboard UI at `/bifrost` but
+the **API and feed at the domain root** (the built dashboard calls the API
+same-origin, e.g. `/auth/login`). So the dashboard's hostname must route the
+**whole hostname** to the tunnel — not just the `/bifrost` path — or login
+breaks. The landing page makes no API calls, so it can be path-scoped.
+
+**Public hostname 1 — dashboard (whole subdomain):**
+
+| Field | Value |
+|-------|-------|
+| Subdomain | `dash` |
+| Domain | `asc.ninja` |
+| Path | *(empty)* |
+| Service | `HTTP` → `spark-server:8443` |
+
+→ `https://dash.asc.ninja/bifrost` (UI) + `/auth/*`, `/nodes/*` (API) all work;
+`dash.asc.ninja/` redirects to `/bifrost/`.
+
+**Public hostname 2 — landing (path-scoped, leaves the apex free):**
+
+| Field | Value |
+|-------|-------|
+| Subdomain | *(empty / `@`)* |
+| Domain | `asc.ninja` |
+| Path | `bifrost.*` |
+| Service | `HTTP` → `spark-server:8443` |
+
+→ `https://asc.ninja/bifrost` serves the landing (Cloudflare preserves the path,
+so the origin gets `/bifrost`). Its Connect button jumps to the dashboard host.
+
+> **Apex caveat:** adding a public hostname for the **apex** `asc.ninja` points
+> the whole apex DNS at the tunnel, so *all* `asc.ninja` traffic is now routed by
+> these rules top-down. Keep the `bifrost.*` rule first; serve anything else on
+> `asc.ninja` by adding a **catch-all** public hostname *below* it (Path empty →
+> your other app, which can be a local container `http://other-app:PORT` or an
+> external `https://…`). Until then, non-`/bifrost` paths on the apex return 404.
+
+Equivalent file-based tunnel config (`config.yml`):
+
+```yaml
+ingress:
+  - hostname: dash.asc.ninja
+    service: http://spark-server:8443
+  - hostname: asc.ninja
+    path: ^/bifrost
+    service: http://spark-server:8443
+  # - hostname: asc.ninja          # your other site (catch-all, add later)
+  #   service: http://other-app:PORT
+  - service: http_status:404       # required final catch-all
+```
 
 Cloudflare terminates TLS at its edge; the `cloudflared` container dials the
 `spark-server` service over the internal Docker network. Then:
 
-- Dashboard → `https://<DASHBOARD_DOMAIN>/bifrost`
-- Landing   → `https://<LANDING_DOMAIN>/bifrost`
+- Dashboard → `https://dash.asc.ninja/bifrost`
+- Landing   → `https://asc.ninja/bifrost`
 
 > **No Cloudflare?** Use the built-in Caddy ingress instead (direct exposure,
 > its own Let's Encrypt certs, needs ports 80/443 open + DNS A/AAAA records).
