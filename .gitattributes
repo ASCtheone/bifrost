@@ -1,0 +1,9 @@
+# Shell scripts and OpenWrt package files must stay LF — CRLF breaks the shebang
+# and busybox parsing on the router.
+*.sh              text eol=lf
+scripts/*         text eol=lf
+apps/openwrt-client/files/** text eol=lf
+apps/spark/**/*.sh text eol=lf
+Caddyfile         text eol=lf
+Dockerfile        text eol=lf
+**/Dockerfile     text eol=lf
