@@ -72,7 +72,9 @@ export class ChangePasswordPage {
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
 
-  current = '';
+  // Pre-filled when arriving from an invite/reset link (login carries the temp
+  // password across in router state) so the user doesn't have to re-type it.
+  current = (history.state?.['current'] as string) ?? '';
   next = '';
   confirm = '';
   error = signal('');

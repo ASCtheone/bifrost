@@ -1,5 +1,5 @@
 import { Component, inject, signal, OnInit } from '@angular/core';
-import { Router } from '@angular/router';
+import { Router, ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service';
 
@@ -89,6 +89,7 @@ import { AuthService } from '../../services/auth.service';
 export class LoginPage implements OnInit {
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
 
   email = '';
   password = '';
@@ -99,6 +100,16 @@ export class LoginPage implements OnInit {
     // First run: no account exists yet — send the operator to the setup screen.
     if (await this.authService.checkSetupNeeded()) {
       await this.router.navigate(['/setup']);
+      return;
+    }
+    // Invite / reset link: ?email=&tmp= pre-fills the form so the user only has
+    // to click Sign In, then is guided through setting a new password.
+    const qp = this.route.snapshot.queryParamMap;
+    const email = qp.get('email');
+    const tmp = qp.get('tmp');
+    if (email && tmp) {
+      this.email = email;
+      this.password = tmp;
     }
   }
 
@@ -108,8 +119,13 @@ export class LoginPage implements OnInit {
 
     try {
       const result = await this.authService.login(this.email, this.password);
-      // Accounts created with a temporary password must change it first.
-      await this.router.navigate([result.needsNewPassword ? '/change-password' : '/dashboard']);
+      // Accounts with a temporary password must change it first — carry the
+      // current (temp) password across so the change screen can pre-fill it.
+      if (result.needsNewPassword) {
+        await this.router.navigate(['/change-password'], { state: { current: this.password } });
+      } else {
+        await this.router.navigate(['/dashboard']);
+      }
     } catch (err) {
       this.error.set((err as { message?: string }).message ?? 'Login failed');
     } finally {

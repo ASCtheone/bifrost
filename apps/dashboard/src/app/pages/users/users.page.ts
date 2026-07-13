@@ -50,8 +50,8 @@ interface UsersResponse {
           </div>
           <div class="field">
             <label>Temporary Password</label>
-            <input type="text" [(ngModel)]="newUser.password" name="password" placeholder="Leave empty for email invite" />
-            <span class="field-hint">User will be asked to change on first login</span>
+            <input type="text" [(ngModel)]="newUser.password" name="password" placeholder="Leave empty to auto-generate" />
+            <span class="field-hint">You'll get a shareable link; user changes it on first login</span>
             @if (newUser.password) {
               <div class="pw-rules">
                 <span [class.pass]="newUser.password.length >= 12" [class.fail]="newUser.password.length < 12">12+ chars</span>
@@ -96,6 +96,39 @@ interface UsersResponse {
             <button class="btn-primary" (click)="addUser()" [disabled]="addingUser() || !newUser.email || !isPasswordValid()">
               {{ addingUser() ? 'Creating...' : 'Create' }}
             </button>
+          </div>
+        </div>
+      </div>
+    }
+
+    <!-- Invite / reset result: shareable link + temp password (no mail service) -->
+    @if (inviteResult(); as r) {
+      <div class="overlay" (click)="inviteResult.set(null)">
+        <div class="dialog" (click)="$event.stopPropagation()">
+          <h3>{{ r.kind === 'invite' ? 'User created' : 'Password reset' }}</h3>
+          <p class="result-sub">
+            Email isn't configured — share this with <strong>{{ r.email }}</strong> directly.
+            The link signs them in and prompts a new password. It stops working once they set it.
+          </p>
+
+          <label>Invite link</label>
+          <div class="copy-row">
+            <input type="text" [value]="r.link" readonly (focus)="selectAll($event)" />
+            <button class="btn-copy" (click)="copy(r.link, 'link')">
+              {{ copied() === 'link' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+
+          <label>Temporary password</label>
+          <div class="copy-row">
+            <input type="text" [value]="r.password" readonly (focus)="selectAll($event)" />
+            <button class="btn-copy" (click)="copy(r.password, 'pw')">
+              {{ copied() === 'pw' ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+
+          <div class="dialog-actions">
+            <button class="btn-primary" (click)="inviteResult.set(null)">Done</button>
           </div>
         </div>
       </div>
@@ -218,6 +251,12 @@ interface UsersResponse {
     .pw-rules .fail { background: color-mix(in srgb, var(--error) 10%, transparent); color: var(--error); }
     .error-msg { background: color-mix(in srgb, var(--error) 10%, transparent); color: var(--error); font-size: 0.8rem; padding: 0.5rem 0.75rem; border-radius: 8px; margin-bottom: 1rem; }
     .dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .result-sub { font-size: 0.78rem; color: var(--text-tertiary); line-height: 1.45; margin: 0 0 1rem; }
+    .copy-row { display: flex; gap: 0.4rem; margin-bottom: 1rem; }
+    .copy-row input { flex: 1; min-width: 0; padding: 0.55rem 0.7rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 0.8rem; font-family: var(--font-num, monospace); box-sizing: border-box; }
+    .copy-row input:focus { outline: none; border-color: var(--accent); }
+    .btn-copy { flex-shrink: 0; padding: 0.55rem 0.9rem; background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 0.75rem; font-weight: 500; transition: all 0.15s ease; }
+    .btn-copy:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
     .table-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     table { width: 100%; border-collapse: collapse; }
@@ -274,6 +313,28 @@ export class UsersPage implements OnInit {
   isSuperadmin = signal(false);
   adminList = signal<{ email: string; displayName: string }[]>([]);
   newUser = { email: '', username: '', password: '', isAdmin: false, isSuperadmin: false, ownerEmail: '' };
+  inviteResult = signal<{ email: string; password: string; link: string; kind: 'invite' | 'reset' } | null>(null);
+  copied = signal('');
+
+  /** Build a shareable sign-in link that pre-fills the invited user's credentials. */
+  private inviteLink(email: string, password: string): string {
+    // document.baseURI respects the app's <base href> (e.g. .../bifrost/).
+    return `${document.baseURI}login?email=${encodeURIComponent(email)}&tmp=${encodeURIComponent(password)}`;
+  }
+
+  async copy(text: string, what: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      this.copied.set(what);
+      setTimeout(() => { if (this.copied() === what) this.copied.set(''); }, 1500);
+    } catch {
+      /* clipboard blocked (e.g. insecure context) — the field is selectable to copy manually */
+    }
+  }
+
+  selectAll(event: Event): void {
+    (event.target as HTMLInputElement).select();
+  }
 
   ngOnInit(): void {
     this.fetchUsers();
@@ -436,10 +497,12 @@ export class UsersPage implements OnInit {
     this.addError.set('');
     this.addingUser.set(true);
     try {
-      await this.api.post('/users', {
-        email: this.newUser.email,
+      const email = this.newUser.email;
+      const typedPassword = this.newUser.password;
+      const res = await this.api.post<{ temporaryPassword?: string }>('/users', {
+        email,
         username: this.newUser.username || undefined,
-        temporaryPassword: this.newUser.password || undefined,
+        temporaryPassword: typedPassword || undefined,
         isAdmin: this.newUser.isAdmin || this.newUser.isSuperadmin,
         isSuperadmin: this.newUser.isSuperadmin || undefined,
         ownerEmail: this.newUser.ownerEmail || undefined,
@@ -447,6 +510,12 @@ export class UsersPage implements OnInit {
       this.showAddDialog.set(false);
       this.newUser = { email: '', username: '', password: '', isAdmin: false, isSuperadmin: false, ownerEmail: this.currentEmail() };
       await this.fetchUsers();
+      // Surface the shareable link + temp password (server-generated, or the one
+      // the admin typed) so it can be handed off without email.
+      const password = res.temporaryPassword || typedPassword;
+      if (password) {
+        this.inviteResult.set({ email, password, link: this.inviteLink(email, password), kind: 'invite' });
+      }
     } catch (err) {
       this.addError.set(err instanceof Error ? err.message : 'Failed to create user');
     } finally {
@@ -482,12 +551,20 @@ export class UsersPage implements OnInit {
   async resetPassword(user: UserRow): Promise<void> {
     const ok = await this.confirmSvc.confirm({
       title: 'Reset Password',
-      message: `Send a password reset to "${user.email}"?`,
+      message: `Generate a new temporary password for "${user.email}"? You'll get a link to share.`,
       confirmLabel: 'Reset',
     });
     if (!ok) return;
-    await this.api.put(`/users/${user.username}`, { resetPassword: true });
+    const res = await this.api.put<{ temporaryPassword?: string }>(`/users/${user.username}`, { resetPassword: true });
     await this.fetchUsers();
+    if (res.temporaryPassword) {
+      this.inviteResult.set({
+        email: user.email,
+        password: res.temporaryPassword,
+        link: this.inviteLink(user.email, res.temporaryPassword),
+        kind: 'reset',
+      });
+    }
   }
 
   async deleteUser(user: UserRow): Promise<void> {
