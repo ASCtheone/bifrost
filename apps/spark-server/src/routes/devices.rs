@@ -45,6 +45,7 @@ async fn list_devices(State(st): State<AppState>, AdminAuth(auth): AdminAuth) ->
                 "ownerEmail": if d.owner_email.is_empty() { Value::Null } else { json!(d.owner_email) },
                 "lastSeen": d.last_seen,
                 "createdAt": d.created_at,
+                "expiresAt": d.expires_at,
             })
         })
         .collect();

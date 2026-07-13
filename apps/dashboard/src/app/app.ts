@@ -264,7 +264,8 @@ export class App implements OnInit, OnDestroy {
   /** Routes reachable without a session — must not be force-redirected to login. */
   private isPublicRoute(): boolean {
     const url = this.router.url.split('?')[0];
-    return url === '/' || url.startsWith('/login') || url.startsWith('/setup');
+    return url === '/' || url.startsWith('/login') || url.startsWith('/setup')
+      || url.startsWith('/device/register');
   }
 
   ngOnDestroy(): void {

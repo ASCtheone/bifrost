@@ -124,7 +124,14 @@ export class LoginPage implements OnInit {
       if (result.needsNewPassword) {
         await this.router.navigate(['/change-password'], { state: { current: this.password } });
       } else {
-        await this.router.navigate(['/dashboard']);
+        // Return to where the user came from (e.g. device registration), but
+        // only internal paths — never an off-site open redirect.
+        const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl');
+        if (returnUrl && returnUrl.startsWith('/')) {
+          await this.router.navigateByUrl(returnUrl);
+        } else {
+          await this.router.navigate(['/dashboard']);
+        }
       }
     } catch (err) {
       this.error.set((err as { message?: string }).message ?? 'Login failed');

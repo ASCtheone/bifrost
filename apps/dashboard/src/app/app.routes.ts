@@ -19,6 +19,11 @@ export const routes: Routes = [
       import('./pages/setup/setup.page').then((m) => m.SetupPage),
   },
   {
+    path: 'device/register',
+    loadComponent: () =>
+      import('./pages/device-register/device-register.page').then((m) => m.DeviceRegisterPage),
+  },
+  {
     path: 'change-password',
     canActivate: [authGuard],
     loadComponent: () =>

@@ -22,6 +22,7 @@ interface DeviceRow {
   readonly ownerEmail: string | null;
   readonly lastSeen: string | null;
   readonly createdAt: string;
+  readonly expiresAt: string | null;
 }
 
 interface DevicesResponse {
@@ -232,6 +233,11 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
             <button class="action-btn" (click)="downloadConfig(device)" title="Download WireGuard config">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4m4-5l5 5 5-5m-5 5V3"/></svg>
             </button>
+            @if (device.expiresAt) {
+              <button class="action-btn" [class.warn]="isExpired(device)" (click)="resetExpiration(device)" [title]="expiryTitle(device)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+              </button>
+            }
             <button class="action-btn danger" (click)="removeDevice(device)" title="Delete device">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M3 6h18m-2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
             </button>
@@ -308,6 +314,7 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
     .action-btn { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: none; border: 1px solid var(--border); color: var(--text-tertiary); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
     .action-btn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
     .action-btn.danger:hover { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); border-color: var(--error); }
+    .action-btn.warn { color: var(--warning, #f59e0b); border-color: color-mix(in srgb, var(--warning, #f59e0b) 40%, var(--border)); }
 
     .provision-dialog { width: 460px; }
     .provision-subtitle { font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 1rem; }
@@ -510,6 +517,34 @@ export class DevicesPage implements OnInit {
       await this.fetchDevices();
     } catch (err) {
       console.error('[devices] unassign failed:', err);
+    }
+  }
+
+  isExpired(device: DeviceRow): boolean {
+    return !!device.expiresAt && new Date(device.expiresAt).getTime() <= Date.now();
+  }
+
+  expiryTitle(device: DeviceRow): string {
+    if (!device.expiresAt) return '';
+    const when = new Date(device.expiresAt).toLocaleString();
+    return this.isExpired(device)
+      ? `Registration expired ${when} — click to reset`
+      : `Registration expires ${when} — click to reset`;
+  }
+
+  /** Reset a device's registration expiry — clear it (never expires). */
+  async resetExpiration(device: DeviceRow): Promise<void> {
+    const ok = await this.confirmSvc.confirm({
+      title: 'Reset Expiration',
+      message: `Remove the expiry on "${device.name}" so it stays registered?`,
+      confirmLabel: 'Reset',
+    });
+    if (!ok) return;
+    try {
+      await this.api.post(`/devices/${device.id}/reset-expiration`, {}); // {} = never
+      await this.fetchDevices();
+    } catch (err) {
+      console.error('[devices] reset expiration failed:', err);
     }
   }
 
