@@ -60,7 +60,9 @@ RUN apt-get update \
 WORKDIR /src
 COPY scripts/build-feed.sh scripts/build-feed.sh
 COPY apps/openwrt-client apps/openwrt-client
-RUN bash scripts/build-feed.sh
+# Don't rely on the checked-out execute bit (Windows/git can drop it); set it.
+RUN chmod +x scripts/build-feed.sh apps/openwrt-client/build-ipk.sh \
+ && bash scripts/build-feed.sh
 # → /src/apps/spark-server/feed/{bifrost_*.ipk, Packages, Packages.gz}
 
 # ── Stage 4: runtime ────────────────────────────────────────────────
