@@ -36,8 +36,9 @@ services:
     volumes:
       - bifrost-data:/app/data     # sqlite database (persisted)
       - ./feed:/app/feed           # opkg package feed served at /feed
-    expose:
-      - "8443"
+    # No published ports: nothing is reachable from the host. cloudflared (and,
+    # optionally, caddy) reach spark-server on 8443 over the internal Docker
+    # network only.
     restart: unless-stopped
 
   # Default ingress: an outbound-only Cloudflare Tunnel. No inbound ports; TLS
