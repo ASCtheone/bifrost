@@ -30,25 +30,58 @@ jobs:
       - name: Test
         run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml
 
-  # Prove the deployable image builds (dashboard + server). The dashboard pulls
-  # FontAwesome Pro packages, so this needs the FONTAWESOME_TOKEN secret; when it
-  # isn't set (e.g. on forks) the job no-ops with a warning instead of failing.
-  image:
-    name: Build server image
+  # Build the deployable images and, on pushes to the default branch, publish
+  # them to GitHub Container Registry (ghcr.io/asctheone/bifrost-*). The server
+  # image pulls FontAwesome Pro, so it needs FONTAWESOME_TOKEN; without it (e.g.
+  # forks) the job no-ops with a warning instead of failing.
+  publish:
+    name: Build & publish images (GHCR)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     env:
       FA_TOKEN: ${{ secrets.FONTAWESOME_TOKEN }}
+      # Push only on branch pushes, not PRs.
+      PUSH: ${{ github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@v4
       - name: Skip notice (no token)
         if: ${{ env.FA_TOKEN == '' }}
-        run: echo "::warning::FONTAWESOME_TOKEN secret not set — skipping dashboard/image build. Add it in Settings → Secrets and variables → Actions to enable."
-      - name: Build unified server image (dashboard + Rust)
+        run: echo "::warning::FONTAWESOME_TOKEN secret not set — skipping image build/publish. Add it in Settings → Secrets and variables → Actions to enable."
+
+      - name: Set up Buildx
         if: ${{ env.FA_TOKEN != '' }}
-        run: |
-          printf '%s' "$FA_TOKEN" > fa_token
-          DOCKER_BUILDKIT=1 docker build \
-            -f apps/spark-server/Dockerfile \
-            --secret id=fontawesome_token,src=fa_token \
-            -t bifrost-server:ci .
-          rm -f fa_token
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: ${{ env.FA_TOKEN != '' && env.PUSH == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: FontAwesome build secret
+        if: ${{ env.FA_TOKEN != '' }}
+        run: printf '%s' "$FA_TOKEN" > fa_token
+
+      - name: Server image (dashboard + Rust)
+        if: ${{ env.FA_TOKEN != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/spark-server/Dockerfile
+          push: ${{ env.PUSH == 'true' }}
+          secret-files: fontawesome_token=fa_token
+          tags: |
+            ghcr.io/asctheone/bifrost-server:latest
+            ghcr.io/asctheone/bifrost-server:${{ github.sha }}
+
+      - name: Spark image (on-site UniFi bridge)
+        if: ${{ env.FA_TOKEN != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/spark
+          push: ${{ env.PUSH == 'true' }}
+          tags: |
+            ghcr.io/asctheone/bifrost-spark:latest
+            ghcr.io/asctheone/bifrost-spark:${{ github.sha }}
