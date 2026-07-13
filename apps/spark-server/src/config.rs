@@ -28,7 +28,7 @@ fn default_feed_dir() -> String {
     "feed".into()
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AuthConfig {
     #[serde(default)]
     pub mode: AuthMode,
@@ -42,6 +42,21 @@ pub struct AuthConfig {
     /// Optional first-run bootstrap: if no users exist, create this superadmin.
     pub bootstrap_admin_email: Option<String>,
     pub bootstrap_admin_password: Option<String>,
+}
+
+// Manual Default so the token lifetime is 720h (not i64's 0) when no config file
+// is present — the `#[serde(default = ...)]` above only applies when parsing a
+// file. A 0 here would make every issued token expire immediately.
+impl Default for AuthConfig {
+    fn default() -> Self {
+        AuthConfig {
+            mode: AuthMode::default(),
+            jwt_secret: None,
+            token_ttl_hours: default_token_ttl_hours(),
+            bootstrap_admin_email: None,
+            bootstrap_admin_password: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]

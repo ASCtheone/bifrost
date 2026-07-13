@@ -50,7 +50,18 @@ async fn main() -> anyhow::Result<()> {
             util::random_hex(32)
         }
     };
-    let jwt = Arc::new(auth::JwtKeys::new(&jwt_secret, config.auth.token_ttl_hours));
+    // Guard against a non-positive TTL, which would make every token expire
+    // immediately (only the ~60s jsonwebtoken leeway would keep it alive).
+    let token_ttl_hours = if config.auth.token_ttl_hours > 0 {
+        config.auth.token_ttl_hours
+    } else {
+        tracing::warn!(
+            ttl = config.auth.token_ttl_hours,
+            "token_ttl_hours must be > 0; falling back to 720"
+        );
+        720
+    };
+    let jwt = Arc::new(auth::JwtKeys::new(&jwt_secret, token_ttl_hours));
 
     // First-run bootstrap: create a superadmin if the user store is empty and
     // bootstrap credentials are configured.
@@ -117,6 +128,9 @@ fn apply_env_overrides(config: &mut config::Config) {
     let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     if let Some(v) = set("BIFROST_JWT_SECRET") {
         config.auth.jwt_secret = Some(v);
+    }
+    if let Some(v) = set("BIFROST_TOKEN_TTL_HOURS").and_then(|v| v.parse::<i64>().ok()) {
+        config.auth.token_ttl_hours = v;
     }
     if let Some(v) = set("BIFROST_DATABASE_URL") {
         config.database_url = v;
