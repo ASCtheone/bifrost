@@ -37,8 +37,8 @@ Only **outbound** HTTPS is needed from the site — no inbound firewall rules.
 Copy `bifrost-spark.example.toml` → `bifrost-spark.toml`:
 
 ```toml
-master_url = "https://bifrost.example.com"   # your VPS control plane
-adoption_code = "XXX-XXX-XXX"                # from the dashboard, first boot only
+master_url = "https://dash.asc.ninja/bifrost/api"  # control plane API base (/bifrost/api)
+adoption_code = "XXX-XXX-XXX"                       # from the dashboard, first boot only
 poll_interval_seconds = 30
 
 [unifi]

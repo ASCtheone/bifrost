@@ -1,7 +1,7 @@
 //! opkg package feed. Serves `Packages`, `Packages.gz`, and the `.ipk` files
 //! from the configured feed directory so a GL.iNet/OpenWrt router can add this
-//! master as a package source:
-//!     src/gz bifrost http://<master>:<port>/feed
+//! master as a package source (mounted under /bifrost/feed):
+//!     src/gz bifrost https://<master>/bifrost/feed
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;

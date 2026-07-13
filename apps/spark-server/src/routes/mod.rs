@@ -16,8 +16,10 @@ pub mod provision;
 pub mod shared;
 pub mod users;
 
-/// Assemble the full application router from every route module.
-pub fn router(state: AppState) -> Router {
+/// The REST API surface — everything except the package feed and the dashboard
+/// SPA. Mounted under `/bifrost/api` (see `main`), so it never collides with
+/// dashboard routes that share a name (e.g. `/devices`, `/users`).
+pub fn api_router() -> Router<AppState> {
     Router::new()
         .merge(health::routes())
         .merge(auth::routes())
@@ -30,8 +32,6 @@ pub fn router(state: AppState) -> Router {
         .merge(config::routes())
         .merge(users::routes())
         .merge(admin::routes())
-        .merge(feed::routes())
-        .with_state(state)
 }
 
 /// Deserialize a field so that "absent" and "present-but-null" are

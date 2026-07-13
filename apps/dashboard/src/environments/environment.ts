@@ -1,7 +1,7 @@
 export const environment = {
   production: false,
-  // Self-hosted spark-server (Rust). No AWS.
-  apiUrl: 'http://127.0.0.1:8899',
+  // Self-hosted spark-server (Rust). No AWS. The API is mounted under /bifrost/api.
+  apiUrl: 'http://127.0.0.1:8899/bifrost/api',
   // spark-server is HTTP-only (no WebSocket push); leave blank to disable the
   // realtime channel — pages load their data over the REST API.
   wsUrl: '',

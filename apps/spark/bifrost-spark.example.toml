@@ -2,8 +2,9 @@
 # Override the path with BIFROST_SPARK_CONFIG=/path/to/file.toml
 # Adoption state (node id + key) is written next to this file as spark-state.json.
 
-# The Bifrost control plane (your VPS).
-master_url = "https://bifrost.example.com"
+# The Bifrost control plane API base (your VPS). The whole app lives under the
+# /bifrost prefix, and the API under /bifrost/api — point master_url there.
+master_url = "https://dash.asc.ninja/bifrost/api"
 
 # One-time adoption code from the dashboard (Add Spark). Only needed for the
 # first boot; after adoption the node key is persisted and this is ignored.

@@ -14,6 +14,7 @@ mod wg;
 use anyhow::Context;
 use axum::response::Redirect;
 use axum::routing::get;
+use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -68,26 +69,35 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let mut app = routes::router(state);
+    // Everything the app exposes lives under a single `/bifrost` prefix, so one
+    // path can be routed to Bifrost while the rest of the domain hosts other
+    // apps:
+    //   /bifrost/api/*   → REST API
+    //   /bifrost/feed/*  → opkg package feed
+    //   /bifrost/*       → dashboard SPA (deep links fall back to index.html)
+    // The dashboard's base-href is /bifrost/ and it calls the API at
+    // /bifrost/api, so it all works on one origin under one prefix.
+    let mut bifrost = Router::new()
+        .nest("/api", routes::api_router())
+        .merge(routes::feed::routes()); // feed route is /feed/:file → /bifrost/feed/:file
 
-    // When a built dashboard is present, this one instance also serves it at
-    // /bifrost (SPA fallback to index.html) and redirects / there — dashboard +
-    // API + package feed on a single VPS origin. The base-href is /bifrost/ so
-    // the app is reachable at e.g. dash.asc.ninja/bifrost.
-    if let Some(dir) = dashboard_dir {
-        if std::path::Path::new(&dir).is_dir() {
+    if let Some(dir) = &dashboard_dir {
+        if std::path::Path::new(dir).is_dir() {
             let index = format!("{dir}/index.html");
-            let spa = ServeDir::new(&dir).fallback(ServeFile::new(index));
-            app = app
-                .nest_service("/bifrost", spa)
-                .route("/", get(|| async { Redirect::permanent("/bifrost/") }));
+            let spa = ServeDir::new(dir).fallback(ServeFile::new(index));
+            bifrost = bifrost.fallback_service(spa);
             tracing::info!(dir = %dir, "serving dashboard at /bifrost");
         } else {
             tracing::warn!(dir = %dir, "dashboard_dir set but not a directory; not serving dashboard");
         }
     }
 
-    let app = app.layer(TraceLayer::new_for_http()).layer(cors);
+    let app = Router::new()
+        .nest("/bifrost", bifrost)
+        .route("/", get(|| async { Redirect::permanent("/bifrost/") }))
+        .with_state(state)
+        .layer(TraceLayer::new_for_http())
+        .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
