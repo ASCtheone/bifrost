@@ -30,25 +30,35 @@
   }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
   label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
-  input[type=text], input[type=number] {
+  select {
     width: 100%; background: var(--input); border: 1px solid var(--border); color: var(--text);
     border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: inherit;
   }
-  input:focus { outline: none; border-color: var(--accent); }
+  select:focus { outline: none; border-color: var(--accent); }
   .row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
   .row label { margin: 0; color: var(--text); font-size: 14px; }
+  .row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   .btns { display: flex; gap: 10px; margin-top: 22px; }
-  button {
+  button, a.btn {
     flex: 1; border: none; border-radius: 10px; padding: 12px; font-size: 14px; font-weight: 600;
-    cursor: pointer; font-family: inherit; transition: filter .15s;
+    cursor: pointer; font-family: inherit; transition: filter .15s; text-align: center;
+    text-decoration: none; display: block;
   }
-  button:hover:not(:disabled) { filter: brightness(1.12); }
+  button:hover:not(:disabled), a.btn:hover { filter: brightness(1.12); }
   button:disabled { opacity: .5; cursor: not-allowed; }
   .primary { background: var(--accent); color: #05242e; }
   .ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
   .danger { background: transparent; color: var(--error); border: 1px solid var(--border); }
   .msg { margin-top: 14px; font-size: 13px; min-height: 18px; }
   .msg.err { color: var(--error); } .msg.ok { color: var(--success); }
+  .hidden { display: none; }
+  .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 6px;
+    font-size: 30px; text-align: center; background: var(--bg); border: 1px dashed var(--border);
+    border-radius: 10px; padding: 16px; margin: 10px 0; color: var(--accent);
+  }
+  .hint { color: var(--dim); font-size: 12px; line-height: 1.5; }
+  .hint b { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -58,67 +68,143 @@
 
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">Checking…</span></div>
 
-    <label for="url">Provision URL</label>
-    <input type="text" id="url" placeholder="http://master:8899/provision/&lt;token&gt;" />
-
-    <div class="row">
-      <input type="checkbox" id="routeLan" checked />
-      <label for="routeLan">Route LAN clients through the VPN</label>
+    <!-- Onboarding: not registered -->
+    <div id="pairing" class="hidden">
+      <div id="needCode">
+        <p class="hint">This router isn't linked to a Bifrost account yet. Get a
+          pairing code, then approve it while signed in to your dashboard.</p>
+        <div class="btns"><button class="primary" id="getCode">Get a pairing code</button></div>
+      </div>
+      <div id="haveCode" class="hidden">
+        <label>Your pairing code</label>
+        <div class="code" id="codeText">---------</div>
+        <div class="btns"><a class="btn primary" id="registerLink" href="#" >Register in dashboard →</a></div>
+        <p class="hint" id="registerHint"></p>
+        <div class="btns"><button class="ghost" id="newCode">New code</button></div>
+      </div>
     </div>
 
-    <div class="btns">
-      <button class="primary" id="connect">Connect</button>
-      <button class="danger" id="disconnect">Disconnect</button>
+    <!-- Registered: settings -->
+    <div id="settings" class="hidden">
+      <label for="location">Location</label>
+      <select id="location"></select>
+
+      <div class="row">
+        <input type="checkbox" id="killswitch" />
+        <label for="killswitch">Kill switch — block internet if the tunnel drops</label>
+      </div>
+      <div class="row">
+        <input type="checkbox" id="routeLan" checked />
+        <label for="routeLan">Route LAN clients through the VPN</label>
+      </div>
+
+      <div class="btns">
+        <button class="primary" id="connect">Connect</button>
+        <button class="danger" id="disconnect">Disconnect</button>
+      </div>
+      <div class="btns">
+        <button class="ghost" id="save">Save settings</button>
+        <button class="ghost" id="refresh">Refresh</button>
+      </div>
     </div>
-    <div class="btns">
-      <button class="ghost" id="refresh">Refresh config</button>
-    </div>
+
     <div class="msg" id="msg"></div>
   </div>
 
 <script>
   var API = '/cgi-bin/bifrost';
   var $ = function (id) { return document.getElementById(id); };
+  var pollTimer = null;
 
   function setMsg(text, ok) { var m = $('msg'); m.textContent = text || ''; m.className = 'msg ' + (ok ? 'ok' : 'err'); }
+  function show(id, on) { $(id).classList[on ? 'remove' : 'add']('hidden'); }
+
+  function callbackUrl() { return window.location.origin + '/cgi-bin/bifrost'; }
 
   function paint(data) {
     var dot = $('dot'), t = $('statusText');
-    if (data.provisionUrl && !$('url').matches(':focus')) $('url').value = data.provisionUrl;
-    if (typeof data.routeLan === 'boolean') $('routeLan').checked = data.routeLan;
     if (data.state === 'up') {
       dot.style.background = 'var(--success)';
       t.textContent = 'Connected — last handshake ' + (data.handshakeAge || '?') + 's ago';
-    } else if (data.enabled) {
+    } else if (data.registered && data.enabled) {
       dot.style.background = 'var(--warning)';
-      t.textContent = 'Enabled, connecting… (no handshake yet)';
+      t.textContent = 'Connecting…';
+    } else if (data.registered) {
+      dot.style.background = 'var(--dim)';
+      t.textContent = 'Registered — not connected';
     } else {
       dot.style.background = 'var(--dim)';
-      t.textContent = 'Disconnected';
+      t.textContent = 'Not linked to an account';
     }
+
+    show('pairing', !data.registered);
+    show('settings', !!data.registered);
+
+    if (!data.registered) {
+      var has = !!data.deviceCode;
+      show('needCode', !has); show('haveCode', has);
+      if (has) {
+        $('codeText').textContent = data.deviceCode;
+        var reg = data.master + '/device/register?deviceCode=' + encodeURIComponent(data.deviceCode)
+          + '&callback=' + encodeURIComponent(callbackUrl());
+        $('registerLink').href = reg;
+        $('registerHint').innerHTML = 'Or go to <b>' + data.master
+          + '/device/register</b> and enter this code. Waiting for approval…';
+        startPolling();
+      }
+    } else {
+      stopPolling();
+      buildLocations(data);
+      $('killswitch').checked = !!data.killswitch;
+      $('routeLan').checked = !!data.routeLan;
+    }
+  }
+
+  function buildLocations(data) {
+    var sel = $('location');
+    if (document.activeElement === sel) return; // don't stomp while the user is choosing
+    var opts = '<option value="auto">Auto — primary with failover</option>';
+    (data.nodes || []).forEach(function (n) {
+      var label = n.name || n.nodeId;
+      if (n.location) label += ' — ' + n.location;
+      if (n.role === 'primary') label += ' (primary)';
+      opts += '<option value="' + n.nodeId + '">' + label + '</option>';
+    });
+    sel.innerHTML = opts;
+    sel.value = data.location || 'auto';
   }
 
   function refreshStatus() {
     fetch(API + '?action=status').then(function (r) { return r.json(); }).then(paint).catch(function () {});
   }
 
-  function post(action, busyBtn) {
-    var body = { action: action, provisionUrl: $('url').value.trim(), routeLan: $('routeLan').checked };
-    if (busyBtn) busyBtn.disabled = true;
+  function post(body, btn) {
+    if (btn) btn.disabled = true;
     setMsg('');
     return fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
-      .then(function (data) { paint(data); return data; })
+      .then(function (d) { paint(d); return d; })
       .catch(function () { setMsg('Request failed — is the router reachable?', false); })
-      .finally(function () { if (busyBtn) busyBtn.disabled = false; });
+      .finally(function () { if (btn) btn.disabled = false; });
   }
 
-  $('connect').onclick = function () {
-    if (!$('url').value.trim()) { setMsg('Enter your provision URL first.', false); return; }
-    post('connect', this).then(function (d) { if (d) setMsg('Connecting…', true); });
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(function () {
+      fetch(API + '?action=poll').then(function (r) { return r.json(); }).then(paint).catch(function () {});
+    }, 3000);
+  }
+  function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+  $('getCode').onclick = function () { post({ action: 'bootstrap' }, this).then(function () { setMsg('Code generated.', true); }); };
+  $('newCode').onclick = $('getCode').onclick;
+  $('save').onclick = function () {
+    post({ action: 'save', location: $('location').value, killswitch: $('killswitch').checked, routeLan: $('routeLan').checked }, this)
+      .then(function () { setMsg('Settings saved.', true); });
   };
-  $('disconnect').onclick = function () { post('disconnect', this).then(function () { setMsg('Disconnected.', true); }); };
-  $('refresh').onclick = function () { post('refresh', this).then(function () { setMsg('Refreshed config from master.', true); }); };
+  $('connect').onclick = function () { post({ action: 'connect' }, this).then(function () { setMsg('Connecting…', true); }); };
+  $('disconnect').onclick = function () { post({ action: 'disconnect' }, this).then(function () { setMsg('Disconnected.', true); }); };
+  $('refresh').onclick = function () { post({ action: 'refresh' }, this).then(function () { setMsg('Refreshed from master.', true); }); };
 
   refreshStatus();
   setInterval(refreshStatus, 5000);

@@ -1,42 +1,64 @@
 #!/bin/sh
-# Bifrost web-UI CGI. Served by the router's uhttpd (no LuCI required) at
-# /cgi-bin/bifrost. Actions: status (GET), save|connect|disconnect|refresh (POST
-# JSON body). Always replies with the `bifrost json` status document.
+# Bifrost web-UI CGI, served by the router's own uhttpd at /cgi-bin/bifrost.
+#   GET  ?action=status                 → status document
+#   GET  ?action=token&token=...        → device-code callback: save token, redirect home
+#   GET  ?action=poll                   → poll the master for a claimed code
+#   POST {action:bootstrap}             → request a device code (first boot)
+#   POST {action:save, location, killswitch, routeLan}
+#   POST {action:connect|disconnect|refresh}
+# All JSON actions reply with the `bifrost json` status document.
 BIN=/usr/bin/bifrost
 
 emit() { printf 'Content-Type: application/json\r\nCache-Control: no-cache\r\n\r\n%s\n' "$1"; }
+redirect() { printf 'Status: 302 Found\r\nLocation: %s\r\nContent-Type: text/html\r\n\r\n' "$1"; }
 status_json() { "$BIN" json 2>/dev/null || echo '{"state":"down"}'; }
+qparam() { printf '%s' "${QUERY_STRING:-}" | sed -n "s/.*[?&]\{0,1\}$1=\([^&]*\).*/\1/p" | head -n1; }
 
-action=""
-provision_url=""
-route_lan=""
-
-if [ "${REQUEST_METHOD:-GET}" = "POST" ]; then
+method="${REQUEST_METHOD:-GET}"
+body=""
+if [ "$method" = "POST" ]; then
 	len="${CONTENT_LENGTH:-0}"
-	body=""
-	case "$len" in
-		*[!0-9]* | "") len=0 ;;
-	esac
+	case "$len" in *[!0-9]* | "") len=0 ;; esac
 	[ "$len" -gt 0 ] && body="$(head -c "$len")"
 	action="$(printf '%s' "$body" | jq -r '.action // empty' 2>/dev/null)"
-	provision_url="$(printf '%s' "$body" | jq -r '.provisionUrl // empty' 2>/dev/null)"
-	route_lan="$(printf '%s' "$body" | jq -r 'if has("routeLan") then (if .routeLan then "1" else "0" end) else "" end' 2>/dev/null)"
 else
-	action="$(printf '%s' "${QUERY_STRING:-}" | sed -n 's/.*action=\([^&]*\).*/\1/p')"
+	action="$(qparam action)"
 fi
 [ -z "$action" ] && action=status
 
-apply_settings() {
-	[ -n "$provision_url" ] && uci set bifrost.settings.provision_url="$provision_url"
-	[ -n "$route_lan" ] && uci set bifrost.settings.route_lan="$route_lan"
-	uci commit bifrost 2>/dev/null
-}
+jbody() { printf '%s' "$body" | jq -r "$1" 2>/dev/null; }
 
 case "$action" in
-	status)     emit "$(status_json)" ;;
-	save)       apply_settings; emit "$(status_json)" ;;
-	connect)    apply_settings; "$BIN" up >/dev/null 2>&1; emit "$(status_json)" ;;
+	# Device-code callback from the dashboard: save the token, then land the
+	# browser back on the config page (which will now show "connected").
+	token)
+		tok="$(qparam token)"
+		[ -n "$tok" ] && "$BIN" save-token "$tok" >/dev/null 2>&1
+		redirect "/"
+		;;
+	bootstrap)
+		"$BIN" bootstrap >/dev/null 2>&1
+		emit "$(status_json)"
+		;;
+	poll)
+		"$BIN" poll >/dev/null 2>&1
+		emit "$(status_json)"
+		;;
+	save)
+		loc="$(jbody '.location // empty')"
+		ks="$(jbody 'if has("killswitch") then (if .killswitch then "1" else "0" end) else "" end')"
+		rl="$(jbody 'if has("routeLan") then (if .routeLan then "1" else "0" end) else "" end')"
+		[ -n "$loc" ] && uci set bifrost.settings.location="$loc"
+		[ -n "$ks" ] && uci set bifrost.settings.killswitch="$ks"
+		[ -n "$rl" ] && uci set bifrost.settings.route_lan="$rl"
+		uci commit bifrost 2>/dev/null
+		"$BIN" killswitch >/dev/null 2>&1                       # apply kill switch now
+		[ "$(uci -q get bifrost.settings.enabled)" = "1" ] && "$BIN" refresh >/dev/null 2>&1
+		emit "$(status_json)"
+		;;
+	connect)    "$BIN" up >/dev/null 2>&1; emit "$(status_json)" ;;
 	disconnect) "$BIN" down >/dev/null 2>&1; emit "$(status_json)" ;;
 	refresh)    "$BIN" refresh >/dev/null 2>&1; emit "$(status_json)" ;;
+	status)     emit "$(status_json)" ;;
 	*)          emit '{"error":"unknown action"}' ;;
 esac

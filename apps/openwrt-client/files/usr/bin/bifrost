@@ -1,12 +1,17 @@
 #!/bin/sh
 # bifrost — OpenWrt/GL.iNet client for the Bifrost VPN.
 #
-# Turns the router into a Bifrost *device*: it fetches its WireGuard config from
-# the master's provision URL and brings up a WireGuard client tunnel to a remote
-# spark, optionally routing the LAN through it. Picks the primary node and fails
-# over to another node when the tunnel goes stale.
+# Onboards by device code: on first boot it asks the master for a short code,
+# which the account owner claims in the dashboard; the master hands back a
+# provision token (via the router's callback, or by the router polling). The
+# router then fetches its WireGuard config from the hard-bound master and brings
+# up a tunnel to a spark — either a chosen location or, on "auto", the primary
+# with failover to the next available node and automatic return to primary.
 #
-# Usage: bifrost {provision|up|down|status|refresh|run}
+# A kill switch (optional) blocks LAN clients from reaching the internet unless
+# their traffic goes through the tunnel — including while connecting/switching.
+#
+# Usage: bifrost {bootstrap|save-token <t>|poll|up|down|status|json|refresh|run}
 set -u
 
 CONFIG=bifrost
@@ -14,46 +19,99 @@ STATE_DIR=/tmp/bifrost
 RESP="$STATE_DIR/provision.json"
 WGTMP="$STATE_DIR/wg.conf"
 HASHFILE="$STATE_DIR/applied.hash"
+CURNODE="$STATE_DIR/current.node"
+# Hard-bound control plane. Override only for self-hosting via
+# `uci set bifrost.settings.master_url=...`.
+MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
+KS_CHAIN=bifrost_ks
 
 mkdir -p "$STATE_DIR"
 
 log() { logger -t bifrost "$*"; [ -t 1 ] && echo "bifrost: $*"; }
-
 cfg_get() { uci -q get "${CONFIG}.settings.$1"; }
+cfg_set() { uci set "${CONFIG}.settings.$1=$2" && uci commit "$CONFIG"; }
 
 ifname() { local n; n=$(cfg_get ifname); [ -n "$n" ] && echo "$n" || echo bifrost; }
+lan_dev() { local d; d=$(uci -q get network.lan.device); [ -n "$d" ] && echo "$d" || echo br-lan; }
+lan_ip() { uci -q get network.lan.ipaddr 2>/dev/null || echo 192.168.8.1; }
+master() { local m; m=$(cfg_get master_url); [ -n "$m" ] && echo "$m" || echo "$MASTER_DEFAULT"; }
+api() { echo "$(master)/api"; }
+jget() { jq -r "$2 // empty" 2>/dev/null <<EOF
+$1
+EOF
+}
 
-# ── config fetch ────────────────────────────────────────────────
+# ── device-code onboarding ──────────────────────────────────────
+
+callback_url() { echo "http://$(lan_ip):8099/cgi-bin/bifrost"; }
+
+# Ask the master for a pairing code (first boot). Echoes the code.
+bootstrap() {
+	[ -n "$(cfg_get provision_token)" ] && { log "already registered"; cfg_get device_code; return 0; }
+	local code hostname resp
+	code=$(cfg_get device_code)
+	if [ -z "$code" ]; then
+		hostname=$(uci -q get system.@system[0].hostname 2>/dev/null || echo router)
+		resp=$(curl -fsS --max-time 15 -X POST "$(api)/device/code" \
+			-H 'Content-Type: application/json' \
+			-d "{\"name\":\"$hostname\",\"callbackUrl\":\"$(callback_url)\"}" 2>/dev/null)
+		code=$(jget "$resp" .deviceCode)
+		[ -n "$code" ] || { log "could not obtain a device code from the master"; return 1; }
+		cfg_set device_code "$code"
+		log "device code issued: $code"
+	fi
+	echo "$code"
+}
+
+# Save the provision token handed back by the dashboard (callback or poll).
+# Config-only: the always-running agent picks it up and connects. Never restarts
+# procd (that would kill the web UI serving the callback).
+save_token() {
+	[ -n "${1:-}" ] || { log "save-token: empty token"; return 1; }
+	uci set "${CONFIG}.settings.provision_token=$1"
+	uci set "${CONFIG}.settings.device_code="
+	uci set "${CONFIG}.settings.enabled=1"
+	uci commit "$CONFIG"
+	log "registered — provision token saved"
+}
+
+# Poll the master once for a claimed code; saves the token when registered.
+poll_once() {
+	local code resp status token
+	code=$(cfg_get device_code)
+	[ -n "$code" ] || return 1
+	resp=$(curl -fsS --max-time 15 "$(api)/device/code/$code" 2>/dev/null) || return 1
+	status=$(jget "$resp" .status)
+	case "$status" in
+		registered)
+			token=$(jget "$resp" .provisionToken)
+			[ -n "$token" ] && { save_token "$token"; return 0; }
+			;;
+		expired) log "device code expired"; cfg_set device_code '' ;;
+	esac
+	return 1
+}
+
+# ── config fetch (by provision token, hard-bound master) ────────
 
 fetch_config() {
-	local url
-	url=$(cfg_get provision_url)
-	if [ -z "$url" ]; then
-		log "no provision_url configured (set it in /etc/config/bifrost)"
+	local token
+	token=$(cfg_get provision_token)
+	[ -n "$token" ] || { log "not registered yet (no provision token)"; return 1; }
+	if ! curl -fsS --max-time 20 "$(api)/provision/$token" -o "$RESP" 2>/dev/null; then
+		log "could not reach master at $(api)"
 		return 1
 	fi
-	if ! curl -fsS --max-time 20 "$url" -o "$RESP" 2>/dev/null; then
-		log "could not reach master at $url"
-		return 1
-	fi
-	if ! jq -e '.nodes' "$RESP" >/dev/null 2>&1; then
-		log "unexpected provision response"
-		return 1
-	fi
+	jq -e '.nodes' "$RESP" >/dev/null 2>&1 || { log "unexpected provision response"; return 1; }
 	return 0
 }
 
-# ── WireGuard .conf parsing ─────────────────────────────────────
+# ── WireGuard .conf parsing + apply (uci netifd) ────────────────
 
-wg_field() { # wg_field <file> <Key>
-	sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | head -n1
-}
-
+wg_field() { sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | head -n1; }
 sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}' || md5sum "$1" | awk '{print $1}'; }
 
-# ── apply config to the router (uci netifd) ─────────────────────
-
-apply_wg() { # apply_wg <wg.conf file>
+apply_wg() {
 	local iface priv addr dns pub psk ep ephost epport allowed mtu peer d a
 	iface=$(ifname)
 	priv=$(wg_field "$1" PrivateKey)
@@ -66,13 +124,11 @@ apply_wg() { # apply_wg <wg.conf file>
 	epport=${ep##*:}
 	allowed=$(wg_field "$1" AllowedIPs | tr ',' ' ')
 	mtu=$(cfg_get mtu); [ -n "$mtu" ] || mtu=1420
-
 	if [ -z "$priv" ] || [ -z "$pub" ] || [ -z "$ephost" ]; then
 		log "config missing required WireGuard fields"
 		return 1
 	fi
 
-	# Interface
 	uci -q delete "network.$iface"
 	uci set "network.$iface=interface"
 	uci set "network.$iface.proto=wireguard"
@@ -81,7 +137,6 @@ apply_wg() { # apply_wg <wg.conf file>
 	[ -n "$addr" ] && uci add_list "network.$iface.addresses=$addr"
 	for d in $dns; do uci add_list "network.$iface.dns=$d"; done
 
-	# Peer — drop any existing peers for this interface, then add ours.
 	while uci -q delete "network.@wireguard_${iface}[0]"; do :; done
 	peer=$(uci add network "wireguard_${iface}")
 	uci set "network.$peer.public_key=$pub"
@@ -97,12 +152,10 @@ apply_wg() { # apply_wg <wg.conf file>
 	return 0
 }
 
-# ── firewall: route LAN clients out through the tunnel ──────────
+# ── firewall: route LAN out via the tunnel ──────────────────────
 
-setup_firewall() { # setup_firewall <iface>
+setup_firewall() {
 	local iface="$1" i name dest z f
-	# Remove any bifrost zone/forwarding we previously added (indices shift on
-	# delete, so only advance when we don't delete).
 	i=0
 	while name=$(uci -q get "firewall.@zone[$i].name"); do
 		[ "$name" = "bifrost" ] && uci -q delete "firewall.@zone[$i]" || i=$((i + 1))
@@ -111,7 +164,6 @@ setup_firewall() { # setup_firewall <iface>
 	while dest=$(uci -q get "firewall.@forwarding[$i].dest"); do
 		[ "$dest" = "bifrost" ] && uci -q delete "firewall.@forwarding[$i]" || i=$((i + 1))
 	done
-
 	z=$(uci add firewall zone)
 	uci set "firewall.$z.name=bifrost"
 	uci set "firewall.$z.network=$iface"
@@ -127,19 +179,49 @@ setup_firewall() { # setup_firewall <iface>
 	/etc/init.d/firewall reload >/dev/null 2>&1
 }
 
+# ── kill switch ─────────────────────────────────────────────────
+# A self-contained iptables chain (doesn't touch the router's own firewall
+# config): LAN clients may only egress via the tunnel interface — everything
+# else headed off-LAN is dropped. Because it matches by output interface, it
+# blocks leaks whenever the tunnel is down or switching, not just when idle.
+
+killswitch_on() {
+	local br iface
+	br=$(lan_dev); iface=$(ifname)
+	command -v iptables >/dev/null 2>&1 || { log "iptables not found; kill switch unavailable"; return 1; }
+	iptables -N "$KS_CHAIN" 2>/dev/null
+	iptables -F "$KS_CHAIN"
+	iptables -A "$KS_CHAIN" -o "$iface" -j RETURN   # allow: out through the tunnel
+	iptables -A "$KS_CHAIN" -o "$br" -j RETURN      # allow: back into the LAN
+	iptables -A "$KS_CHAIN" -j DROP                 # block: everything else (WAN)
+	iptables -C FORWARD -i "$br" -j "$KS_CHAIN" 2>/dev/null \
+		|| iptables -I FORWARD -i "$br" -j "$KS_CHAIN"
+	log "kill switch engaged"
+}
+
+killswitch_off() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	iptables -D FORWARD -i "$(lan_dev)" -j "$KS_CHAIN" 2>/dev/null
+	iptables -F "$KS_CHAIN" 2>/dev/null
+	iptables -X "$KS_CHAIN" 2>/dev/null
+	log "kill switch released"
+}
+
+apply_killswitch() {
+	[ "$(cfg_get killswitch)" = "1" ] && killswitch_on || killswitch_off
+}
+
 # ── tunnel health ───────────────────────────────────────────────
 
-handshake_age() { # echoes seconds since last handshake, or "none"
+handshake_age() {
 	local hs now
 	hs=$(wg show "$(ifname)" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
 	[ -n "$hs" ] && [ "$hs" != "0" ] || { echo none; return; }
 	now=$(date +%s)
 	echo $((now - hs))
 }
-
 healthy() { local a; a=$(handshake_age); [ "$a" != none ] && [ "$a" -lt 180 ]; }
-
-wait_handshake() { # wait_handshake <seconds>
+wait_handshake() {
 	local t=0
 	while [ "$t" -lt "$1" ]; do
 		[ "$(handshake_age)" != none ] && return 0
@@ -148,31 +230,48 @@ wait_handshake() { # wait_handshake <seconds>
 	return 1
 }
 
-# ── connect (with node failover) ────────────────────────────────
+# ── node ordering (location: auto|<nodeId>) ─────────────────────
+
+node_order() {
+	local loc; loc=$(cfg_get location); [ -n "$loc" ] || loc=auto
+	if [ "$loc" = "auto" ]; then
+		# primary first, then the rest — this is what enables return-to-primary.
+		jq -r '.nodes | to_entries | sort_by(.value.role != "primary") | .[].key' "$RESP"
+	else
+		jq -r --arg id "$loc" '.nodes | to_entries | map(select(.value.nodeId == $id)) | .[].key' "$RESP"
+	fi
+}
+
+bring_up() {  # bring_up <node index> ; returns 0 if the tunnel handshakes
+	local idx="$1" conf hash
+	conf=$(jq -r ".nodes[$idx].wgConfig // empty" "$RESP")
+	[ -n "$conf" ] || return 1
+	printf '%s\n' "$conf" >"$WGTMP"
+	hash=$(sha "$WGTMP")
+	if [ "$hash" = "$(cat "$HASHFILE" 2>/dev/null)" ] && healthy; then
+		return 0   # already on this exact config and healthy
+	fi
+	apply_wg "$WGTMP" || return 1
+	ifup "$(ifname)" >/dev/null 2>&1
+	if wait_handshake 15; then
+		echo "$hash" >"$HASHFILE"
+		jq -r ".nodes[$idx].nodeId // empty" "$RESP" >"$CURNODE"
+		log "connected via $(jq -r ".nodes[$idx].name // .nodes[$idx].nodeId" "$RESP")"
+		return 0
+	fi
+	return 1
+}
+
+# ── connect (location-aware, primary-first failover) ────────────
 
 connect() {
+	apply_killswitch          # engage before touching the tunnel, so no leak while switching
 	fetch_config || return 1
-	local order idx conf hash
-	# Try nodes primary-first (role=="primary" sorts ahead).
-	order=$(jq -r '.nodes | to_entries | sort_by(.value.role != "primary") | .[].key' "$RESP")
-	if [ -z "$order" ]; then
-		log "master returned no usable nodes"
-		return 1
-	fi
+	local order idx
+	order=$(node_order)
+	[ -n "$order" ] || { log "no usable node for the selected location"; return 1; }
 	for idx in $order; do
-		conf=$(jq -r ".nodes[$idx].wgConfig // empty" "$RESP")
-		[ -n "$conf" ] || continue
-		printf '%s\n' "$conf" >"$WGTMP"
-		hash=$(sha "$WGTMP")
-		# Already on this exact config and healthy → nothing to do.
-		if [ "$hash" = "$(cat "$HASHFILE" 2>/dev/null)" ] && healthy; then
-			return 0
-		fi
-		apply_wg "$WGTMP" || continue
-		ifup "$(ifname)" >/dev/null 2>&1
-		if wait_handshake 15; then
-			echo "$hash" >"$HASHFILE"
-			log "connected via node $(jq -r ".nodes[$idx].name // .nodes[$idx].nodeId" "$RESP")"
+		if bring_up "$idx"; then
 			return 0
 		fi
 		log "node $(jq -r ".nodes[$idx].nodeId" "$RESP") did not come up, trying next"
@@ -181,71 +280,115 @@ connect() {
 	return 1
 }
 
+# On "auto", if we're healthy but not on the primary, try the primary again so we
+# return to it once it's back. Only disrupt when the primary actually comes up.
+maybe_return_primary() {
+	[ "$(cfg_get location)" = "auto" ] || return 0
+	local primary_idx cur primary_id
+	primary_idx=$(jq -r '.nodes | to_entries | map(select(.value.role == "primary")) | .[0].key // empty' "$RESP")
+	[ -n "$primary_idx" ] || return 0
+	primary_id=$(jq -r ".nodes[$primary_idx].nodeId // empty" "$RESP")
+	cur=$(cat "$CURNODE" 2>/dev/null)
+	[ "$cur" = "$primary_id" ] && return 0    # already on primary
+	if bring_up "$primary_idx"; then
+		log "returned to primary node"
+	fi   # if it fails, the current fallback tunnel is left in place
+}
+
 teardown() {
 	local iface; iface=$(ifname)
 	ifdown "$iface" >/dev/null 2>&1
 	uci -q delete "network.$iface"
 	while uci -q delete "network.@wireguard_${iface}[0]"; do :; done
 	uci commit network
-	rm -f "$HASHFILE"
+	rm -f "$HASHFILE" "$CURNODE"
 }
 
-# ── subcommands ─────────────────────────────────────────────────
+# ── status ──────────────────────────────────────────────────────
 
 cmd_status() {
 	local iface age
 	iface=$(ifname)
 	echo "Bifrost VPN status"
 	echo "  interface:   $iface"
-	echo "  provision:   $(cfg_get provision_url)"
+	echo "  master:      $(master)"
+	echo "  registered:  $([ -n "$(cfg_get provision_token)" ] && echo yes || echo "no (code: $(cfg_get device_code))")"
+	echo "  location:    $(cfg_get location)"
+	echo "  kill switch: $([ "$(cfg_get killswitch)" = 1 ] && echo on || echo off)"
 	echo "  route LAN:   $([ "$(cfg_get route_lan)" = 1 ] && echo yes || echo no)"
 	age=$(handshake_age)
-	if [ "$age" = none ]; then
-		echo "  tunnel:      down (no handshake)"
-	else
-		echo "  tunnel:      up (last handshake ${age}s ago)"
-	fi
+	[ "$age" = none ] && echo "  tunnel:      down" || echo "  tunnel:      up (handshake ${age}s ago)"
 	echo
 	wg show "$iface" 2>/dev/null || echo "  (interface not present)"
 }
 
+cmd_json() {
+	local age state token nodes
+	age=$(handshake_age)
+	[ "$age" = none ] && state=down || state=up
+	token=$(cfg_get provision_token)
+	# Available locations (from the last provision), for the UI picker.
+	nodes='[]'
+	[ -f "$RESP" ] && nodes=$(jq -c '[.nodes[] | {nodeId, name, location, role}]' "$RESP" 2>/dev/null || echo '[]')
+	printf '{"state":"%s","handshakeAge":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
+		"$state" "$age" \
+		"$([ -n "$token" ] && echo true || echo false)" \
+		"$(cfg_get device_code)" "$(master)" "$(cfg_get location)" \
+		"$([ "$(cfg_get killswitch)" = 1 ] && echo true || echo false)" \
+		"$([ "$(cfg_get route_lan)" = 1 ] && echo true || echo false)" \
+		"$([ "$(cfg_get enabled)" = 1 ] && echo true || echo false)" \
+		"$(cat "$CURNODE" 2>/dev/null)" "$nodes"
+}
+
+# up/down just flip the enabled flag — the always-running agent reacts within a
+# cycle (connect or tear down). No procd restart, so the web UI stays alive.
+cmd_up() { cfg_set enabled 1; }
+cmd_down() { cfg_set enabled 0; }
+
+# ── entrypoint ──────────────────────────────────────────────────
+
 case "${1:-}" in
+	bootstrap) bootstrap ;;
+	save-token) save_token "${2:-}" ;;
+	poll) poll_once ;;
 	provision | refresh) connect ;;
-	up)
-		uci set "${CONFIG}.settings.enabled=1"; uci commit "$CONFIG"
-		/etc/init.d/bifrost enable >/dev/null 2>&1
-		/etc/init.d/bifrost restart
-		;;
-	down)
-		uci set "${CONFIG}.settings.enabled=0"; uci commit "$CONFIG"
-		/etc/init.d/bifrost stop
-		teardown
-		;;
+	killswitch) apply_killswitch ;;
+	up) cmd_up ;;
+	down) cmd_down ;;
 	status) cmd_status ;;
-	json)
-		# Machine-readable status for the LuCI plugin.
-		age=$(handshake_age)
-		[ "$age" = none ] && state=down || state=up
-		printf '{"state":"%s","handshakeAge":"%s","provisionUrl":"%s","interface":"%s","routeLan":%s,"enabled":%s}\n' \
-			"$state" "$age" "$(cfg_get provision_url)" "$(ifname)" \
-			"$([ "$(cfg_get route_lan)" = 1 ] && echo true || echo false)" \
-			"$([ "$(cfg_get enabled)" = 1 ] && echo true || echo false)"
-		;;
+	json) cmd_json ;;
 	run)
-		# Foreground daemon (invoked by procd). Connect, then keep healthy.
-		local_interval=$(cfg_get refresh_interval); [ -n "$local_interval" ] || local_interval=300
-		connect || log "initial connect failed; will keep retrying"
-		while sleep "$local_interval"; do
-			if healthy; then
-				connect >/dev/null 2>&1 || true   # refresh config, reapply only if changed
+		# Reactive daemon: always running, re-reads uci each 5s tick and acts on
+		# it, so the web UI only edits config and never restarts procd. Config is
+		# re-fetched from the master (and return-to-primary attempted) every
+		# refresh_interval, not every tick.
+		interval=$(cfg_get refresh_interval); [ -n "$interval" ] || interval=300
+		every=$((interval / 5)); [ "$every" -ge 1 ] || every=1
+		tick=0
+		while :; do
+			apply_killswitch
+			if [ -z "$(cfg_get provision_token)" ]; then
+				[ -n "$(cfg_get device_code)" ] && poll_once   # complete pairing
+			elif [ "$(cfg_get enabled)" = "1" ]; then
+				if healthy; then
+					if [ $((tick % every)) -eq 0 ]; then
+						fetch_config && maybe_return_primary
+						connect >/dev/null 2>&1 || true   # refresh; reapply only if changed
+					fi
+				else
+					log "tunnel down — connecting (failover)"
+					connect || log "connect failed; retrying"
+				fi
 			else
-				log "tunnel stale — reconnecting (failover)"
-				connect || log "reconnect failed; retrying next cycle"
+				# Disabled but a tunnel is up → tear it down.
+				[ "$(handshake_age)" != none ] && teardown
 			fi
+			tick=$((tick + 1))
+			sleep 5
 		done
 		;;
 	*)
-		echo "Usage: bifrost {provision|up|down|status|json|refresh|run}" >&2
+		echo "Usage: bifrost {bootstrap|save-token <t>|poll|up|down|status|json|refresh|run}" >&2
 		exit 1
 		;;
 esac
