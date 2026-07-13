@@ -50,7 +50,20 @@ RUN find src -name '*.rs' -exec touch {} + \
  && cargo build --release \
  && strip target/release/spark-server
 
-# ── Stage 3: runtime ────────────────────────────────────────────────
+# ── Stage 3: build the opkg feed (GL.iNet `bifrost` package + index) ─────
+# Assembles the router .ipk (gzip-tar, no OpenWrt SDK needed) and the Packages
+# index, so the server ships a ready-to-use feed at /bifrost/feed.
+FROM debian:bookworm-slim AS feed
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends bash tar gzip coreutils \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY scripts/build-feed.sh scripts/build-feed.sh
+COPY apps/openwrt-client apps/openwrt-client
+RUN bash scripts/build-feed.sh
+# → /src/apps/spark-server/feed/{bifrost_*.ipk, Packages, Packages.gz}
+
+# ── Stage 4: runtime ────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
@@ -59,6 +72,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=server    /src/target/release/spark-server       /usr/local/bin/spark-server
 COPY --from=dashboard /app/dist/dashboard/browser            /app/dashboard
+COPY --from=feed      /src/apps/spark-server/feed            /app/feed
 
 # Sensible in-container defaults; override any of these via the environment.
 ENV BIFROST_BIND_ADDR=0.0.0.0 \
@@ -68,8 +82,10 @@ ENV BIFROST_BIND_ADDR=0.0.0.0 \
     BIFROST_FEED_DIR=/app/feed
 # BIFROST_JWT_SECRET must be supplied at runtime (compose reads it from .env).
 
-RUN mkdir -p /app/data /app/feed && chown -R bifrost:bifrost /app
+# The feed is baked into the image (rebuilt each `docker compose up --build`);
+# only the database is a persistent volume.
+RUN mkdir -p /app/data && chown -R bifrost:bifrost /app
 USER bifrost
-VOLUME ["/app/data", "/app/feed"]
+VOLUME ["/app/data"]
 EXPOSE 8443
 CMD ["spark-server"]
