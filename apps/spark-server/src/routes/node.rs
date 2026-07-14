@@ -4,7 +4,7 @@ use crate::repo::device_repo;
 use crate::repo::node_repo::{self, HeartbeatUpdate};
 use crate::state::AppState;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::{
     routing::{get, put},
@@ -113,6 +113,7 @@ fn node_key_header(headers: &HeaderMap) -> AppResult<&str> {
 async fn heartbeat(
     State(st): State<AppState>,
     Path(node_id): Path<String>,
+    peer: Option<ConnectInfo<std::net::SocketAddr>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> AppResult<Json<Value>> {
@@ -126,9 +127,21 @@ async fn heartbeat(
             .map_err(|e| AppError::BadRequest(format!("invalid json body: {e}")))?
     };
 
+    // The spark's public IP, taken from the connection rather than from the body.
+    //
+    // It used to self-report this after asking api.ipify.org, which meant a
+    // third-party call every cycle, no IP at all on a host that can reach us but not
+    // the open internet, and a value the node chose for itself. We can see the true
+    // source address of this very request, so we use that. IPv4 only — see net.rs.
+    //
+    // `None` (an IPv6-only caller, or an unparseable header) leaves the stored value
+    // untouched rather than clearing it: a working endpoint must not be dropped just
+    // because one heartbeat arrived over IPv6.
+    let observed_ip = crate::net::client_ipv4(&headers, peer.map(|ConnectInfo(a)| a));
+
     let update = HeartbeatUpdate {
         actual_config: b.get("actualConfig").cloned().unwrap_or(Value::Null),
-        wan_ip: b.get("wanIp").and_then(Value::as_str).map(String::from),
+        wan_ip: observed_ip,
         geo: b.get("geo").cloned().filter(|v| !v.is_null()),
         isp_name: b.get("ispName").and_then(Value::as_str).map(String::from),
         speed_down: b.get("speedDown").and_then(Value::as_f64),

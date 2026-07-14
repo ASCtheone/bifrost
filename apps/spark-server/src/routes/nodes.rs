@@ -100,6 +100,12 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         "syncState": n.sync_state,
         "lastAppliedVersion": n.last_applied_version,
         "wanIp": n.wan_ip,
+        // What devices will actually dial, and why. `endpoint` is null when the spark
+        // has never heartbeated and no override is set — in which case this spark can
+        // build no device configs at all, and the UI should say so rather than let it
+        // look configured.
+        "endpointOverride": n.endpoint_override,
+        "endpoint": crate::routes::shared::node_endpoint(n),
         "geo": n.geo.as_ref().map(|g| g.0.clone()),
         "ispName": n.isp_name,
         "speedDown": n.speed_down,
@@ -180,6 +186,8 @@ struct UpdateNodeReq {
     unifi_password: Option<String>,
     unifi_api_key: Option<String>,
     unifi_insecure: Option<bool>,
+    /// Empty string clears it (back to automatic); absent leaves it alone.
+    endpoint_override: Option<String>,
 }
 
 async fn update_node(
@@ -229,6 +237,7 @@ async fn update_node(
         unifi_password_enc,
         unifi_api_key_enc,
         unifi_insecure: req.unifi_insecure,
+        endpoint_override: req.endpoint_override,
     };
     if patch.is_empty() {
         return Err(AppError::BadRequest("No fields to update".into()));

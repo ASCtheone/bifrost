@@ -246,6 +246,7 @@ pub struct NodePatch {
     pub unifi_password_enc: Option<String>,
     pub unifi_api_key_enc: Option<String>,
     pub unifi_insecure: Option<bool>,
+    pub endpoint_override: Option<String>,
 }
 
 impl NodePatch {
@@ -264,6 +265,7 @@ impl NodePatch {
             && self.unifi_password_enc.is_none()
             && self.unifi_api_key_enc.is_none()
             && self.unifi_insecure.is_none()
+            && self.endpoint_override.is_none()
     }
 }
 
@@ -309,6 +311,9 @@ pub async fn patch_node(pool: &SqlitePool, node_id: &str, p: NodePatch) -> AppRe
     }
     if let Some(v) = p.unifi_insecure {
         qb.push(", unifi_insecure = ").push_bind(v);
+    }
+    if let Some(v) = p.endpoint_override {
+        qb.push(", endpoint_override = ").push_bind(v);
     }
     if let Some(owner) = p.owner {
         qb.push(", owner_id = ").push_bind(owner.clone());

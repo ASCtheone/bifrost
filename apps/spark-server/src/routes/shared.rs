@@ -92,10 +92,33 @@ pub struct BuiltNodeConfig {
     pub speed_up: Option<f64>,
 }
 
+/// The host a device should put in its WireGuard `Endpoint`.
+///
+/// Automatic by default: the spark's public IPv4, as observed by the control plane on
+/// each heartbeat (see net.rs) — so a site with a changing WAN address needs no
+/// configuration and no dynamic-DNS record. `endpoint_override` wins when set, which
+/// is what you want for a DDNS name or a static address.
+///
+/// `None` means we cannot build a config for this node at all: an endpoint we invented
+/// would produce a `.conf` that silently never connects, which is worse than refusing.
+/// This is also why a spark that has never heartbeated yields no device configs — it
+/// has no known address yet.
+pub fn node_endpoint(node: &Node) -> Option<String> {
+    let overridden = node.endpoint_override.trim();
+    if !overridden.is_empty() {
+        return Some(overridden.to_string());
+    }
+    node.wan_ip
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
 /// Build a WireGuard config for `device` against every eligible node: adopted,
-/// owner-compatible with the device, with a known server public key and a WAN
-/// IP to use as the endpoint. Consolidates the logic duplicated across
-/// provision-device, auth-provision, and get-device-config.
+/// owner-compatible with the device, with a known server public key and an endpoint
+/// (see `node_endpoint`). Consolidates the logic duplicated across provision-device,
+/// auth-provision, and get-device-config.
 pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeConfig> {
     let device_owner = device.owner_email.as_str();
     let mut out = Vec::new();
@@ -112,7 +135,7 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
         if server.public_key.is_empty() {
             continue;
         }
-        let Some(wan_ip) = node.wan_ip.as_deref().filter(|s| !s.is_empty()) else { continue };
+        let Some(endpoint) = node_endpoint(node) else { continue };
 
         let wg_config = wg::build_config(&WgConfigParams {
             private_key: &device.private_key,
@@ -120,7 +143,7 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
             dns: &device.dns.0,
             server_public_key: &server.public_key,
             preshared_key: &device.preshared_key,
-            endpoint: wan_ip,
+            endpoint: &endpoint,
             port: server.server_port,
             allowed_ips: &device.allowed_ips.0,
         });
@@ -130,7 +153,7 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
             node_name: if node.node_name.is_empty() { node.node_id.clone() } else { node.node_name.clone() },
             server_name: node.spark_vpn_name.clone().unwrap_or_default(),
             server_public_key: server.public_key,
-            endpoint: wan_ip.to_string(),
+            endpoint: endpoint.clone(),
             port: server.server_port,
             wg_config,
             location: node_location(node),

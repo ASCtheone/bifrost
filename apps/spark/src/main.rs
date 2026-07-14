@@ -242,16 +242,9 @@ async fn heartbeat(
     if let Some(s) = server {
         body["sparkVpnId"] = json!(s.id);
     }
-    if let Some(ip) = detect_wan_ip().await {
-        body["wanIp"] = json!(ip);
-    }
+    // The public IP is NOT reported here. The control plane sees the source address of
+    // this very request and derives it there — no third-party lookup, nothing to fail
+    // on a host that can reach the master but not the open internet, and a node cannot
+    // claim an address that isn't its own.
     control.heartbeat(node_id, node_key, &body).await
-}
-
-/// Best-effort public IP detection (the endpoint devices dial into).
-async fn detect_wan_ip() -> Option<String> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()?;
-    let ip = client.get("https://api.ipify.org").send().await.ok()?.text().await.ok()?;
-    let ip = ip.trim().to_string();
-    if ip.is_empty() || ip.len() > 45 { None } else { Some(ip) }
 }

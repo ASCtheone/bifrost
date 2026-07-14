@@ -4,6 +4,7 @@ mod crypto;
 mod db;
 mod domain;
 mod error;
+mod net;
 mod repo;
 mod routes;
 mod state;
@@ -136,7 +137,14 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("bind {addr}"))?;
     tracing::info!("listening on http://{addr}");
 
-    axum::serve(listener, app).await.context("server error")?;
+    // into_make_service_with_connect_info: attaches the peer SocketAddr so the
+    // heartbeat can fall back to it when there is no proxy header to read.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .context("server error")?;
     Ok(())
 }
 

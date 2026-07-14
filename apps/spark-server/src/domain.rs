@@ -49,6 +49,9 @@ pub struct Node {
     pub tunnel_id: String,
     pub controller_url: String,
     pub controller_api_key: Option<String>,
+    /// Optional WireGuard endpoint for devices. Empty = automatic (the spark's
+    /// observed public IPv4). See routes::shared::node_endpoint.
+    pub endpoint_override: String,
     /// UniFi controller the spark drives. Configured in the dashboard and served to
     /// the spark over its node-key channel, so nothing is hand-edited on the box.
     pub unifi_host: String,

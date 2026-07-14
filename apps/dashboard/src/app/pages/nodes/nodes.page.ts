@@ -43,6 +43,9 @@ interface NodeRow {
   readonly hasUnifiPassword: boolean;
   readonly hasUnifiApiKey: boolean;
   readonly unifiInsecure: boolean;
+  /** What devices will dial. null = spark has no known address yet. */
+  readonly endpoint: string | null;
+  readonly endpointOverride: string;
   readonly sparkVpnName: string | null;
   readonly sparkVpnId: string | null;
   readonly pendingVpnCreate: boolean;
@@ -91,6 +94,7 @@ interface UnifiEdit {
   unifiPassword: string;
   unifiApiKey: string;
   unifiInsecure: boolean;
+  endpointOverride: string;
 }
 
 type PanelTab = 'status' | 'config' | 'unifi';
@@ -513,9 +517,19 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             </label>
                           </div>
                           <div class="field-sm full">
-                            <label>WireGuard endpoint</label>
-                            <input type="text" [(ngModel)]="unifiForm.controllerUrl" name="unifiUrl" placeholder="vpn.example.com" />
-                            <span class="field-hint">Public host devices connect to for the tunnel — not the controller.</span>
+                            <label>WireGuard endpoint (optional)</label>
+                            <input
+                              type="text"
+                              [(ngModel)]="unifiForm.endpointOverride"
+                              name="endpointOverride"
+                              [placeholder]="node.wanIp ? 'Auto — ' + node.wanIp : 'Auto — detected on first heartbeat'"
+                            />
+                            <span class="field-hint">
+                              What devices dial for the tunnel — not the controller. Leave blank
+                              to use the spark's public IP, which the control plane detects
+                              itself and keeps up to date. Set it only for a DDNS name or a
+                              static address.
+                            </span>
                           </div>
                         </div>
                         <div class="edit-actions">
@@ -544,7 +558,15 @@ type PanelTab = 'status' | 'config' | 'unifi';
                       </div>
                       <div class="info-row">
                         <span class="info-label">WireGuard endpoint</span>
-                        <span class="info-value mono">{{ node.controllerUrl || '—' }}</span>
+                        <span class="info-value mono">
+                          @if (node.endpointOverride) {
+                            {{ node.endpointOverride }} <span class="dim-note">(manual)</span>
+                          } @else if (node.endpoint) {
+                            {{ node.endpoint }} <span class="dim-note">(auto-detected)</span>
+                          } @else {
+                            <span class="warn">unknown — no heartbeat yet, so no device configs can be built</span>
+                          }
+                        </span>
                       </div>
                     }
                   </div>
@@ -707,6 +729,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .copy-row input { flex: 1; min-width: 0; padding: 0.6rem 0.75rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
     .btn-copy { flex-shrink: 0; display: flex; align-items: center; gap: 0.4rem; padding: 0.6rem 0.8rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 0.78rem; cursor: pointer; transition: border-color 0.15s ease, color 0.15s ease; }
     .btn-copy:hover { border-color: var(--accent); color: var(--accent); }
+    .dim-note { color: var(--text-disabled); font-size: 0.7rem; }
     .field-sm label.inline { display: flex; align-items: center; gap: 0.5rem; text-transform: none; letter-spacing: 0; font-size: 0.75rem; color: var(--text-tertiary); }
     .field-sm label.inline input { width: auto; }
 
@@ -915,6 +938,7 @@ export class NodesPage implements OnInit, OnDestroy {
     unifiPassword: '',
     unifiApiKey: '',
     unifiInsecure: true,
+    endpointOverride: '',
   };
 
   /** The one-liner shown in the install dialog; null when the dialog is closed. */
@@ -1059,6 +1083,7 @@ export class NodesPage implements OnInit, OnDestroy {
       unifiPassword: '',
       unifiApiKey: '',
       unifiInsecure: node.unifiInsecure,
+      endpointOverride: node.endpointOverride,
     };
     this.editingUnifiId.set(node.id);
   }
@@ -1325,7 +1350,8 @@ export class NodesPage implements OnInit, OnDestroy {
     await this.withBusy(nodeId, async () => {
       const f = this.unifiForm;
       const payload: Record<string, string | number | boolean> = {
-        controllerUrl: f.controllerUrl,
+        // Empty string clears the override → back to the auto-detected address.
+        endpointOverride: f.endpointOverride,
         unifiHost: f.unifiHost,
         unifiPort: Number(f.unifiPort) || 443,
         unifiSite: f.unifiSite || 'default',
