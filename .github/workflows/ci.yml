@@ -91,3 +91,86 @@ jobs:
             ghcr.io/asctheone/bifrost-spark:latest
             ghcr.io/asctheone/bifrost-spark:${{ steps.ver.outputs.v }}
             ghcr.io/asctheone/bifrost-spark:${{ github.sha }}
+
+  # Build the GL.iNet/OpenWrt package and publish it as an opkg feed on GitHub
+  # Releases, so a router can install straight from this repo:
+  #
+  #   src/gz bifrost https://github.com/ASCtheone/bifrost/releases/latest/download
+  #
+  # opkg fetches <feed>/Packages.gz, and GitHub's `releases/latest/download/<asset>`
+  # redirects to the newest release — so the router's feed URL never changes across
+  # versions. The release is tagged from VERSION; re-running on the same version
+  # replaces the assets rather than erroring.
+  #
+  # PRs build the package (to catch a broken ipk) but never publish.
+  openwrt:
+    name: Build & publish GL.iNet package (opkg feed)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create releases + upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read unified version
+        id: ver
+        run: echo "v=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      # Produces dist/{bifrost_<version>_all.ipk, Packages, Packages.gz} — the same
+      # script the server image uses to bake its own /bifrost/feed, so the two feeds
+      # can never drift.
+      - name: Build ipk + opkg index
+        run: |
+          chmod +x scripts/build-feed.sh apps/openwrt-client/build-ipk.sh
+          bash scripts/build-feed.sh dist
+
+      # Guard against publishing a feed a router would choke on: the index must
+      # advertise the package at the version we think we built.
+      - name: Verify feed
+        run: |
+          set -euo pipefail
+          v='${{ steps.ver.outputs.v }}'
+          test -f "dist/bifrost_${v}_all.ipk" || { echo "::error::expected dist/bifrost_${v}_all.ipk"; exit 1; }
+          grep -qx "Package: bifrost" dist/Packages || { echo "::error::Packages index has no bifrost entry"; exit 1; }
+          grep -qx "Version: ${v}" dist/Packages || { echo "::error::Packages index version != ${v}"; exit 1; }
+          # The ipk must be a gzip'd tar (the legacy ipkg format opkg accepts) —
+          # an ar archive here is the classic "Malformed package file" on GL.iNet.
+          gzip -t "dist/bifrost_${v}_all.ipk"
+          echo "feed OK:"; cat dist/Packages
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bifrost-openwrt-ipk
+          path: dist/
+
+      - name: Publish feed to GitHub Releases
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.ver.outputs.v }}
+        run: |
+          set -euo pipefail
+          assets=("dist/bifrost_${V}_all.ipk" dist/Packages dist/Packages.gz)
+
+          # Heredoc (not an inline --notes string): keeps the body free of the
+          # YAML block's indentation, which Markdown would render as code.
+          cat > notes.md <<EOF
+          opkg feed for GL.iNet/OpenWrt routers.
+
+          On the router:
+
+          \`\`\`sh
+          echo 'src/gz bifrost https://github.com/${{ github.repository }}/releases/latest/download' >> /etc/opkg/customfeeds.conf
+          opkg update && opkg install bifrost
+          \`\`\`
+
+          The config page then lives at \`http://<router-ip>:8099/\`.
+          EOF
+          sed -i 's/^          //' notes.md
+
+          if gh release view "v${V}" >/dev/null 2>&1; then
+            echo "release v${V} exists — replacing assets"
+            gh release upload "v${V}" "${assets[@]}" --clobber
+          else
+            gh release create "v${V}" "${assets[@]}" --title "v${V}" --notes-file notes.md
+          fi

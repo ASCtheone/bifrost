@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Build the OpenWrt package(s) and generate the opkg feed the master serves at
-# /feed. After running this, a GL.iNet/OpenWrt router that added the master as a
-# package source can `opkg update && opkg install bifrost-vpn`.
+# Build the OpenWrt package(s) and generate an opkg feed: the .ipk plus the
+# Packages/Packages.gz index. A GL.iNet/OpenWrt router that adds the feed as a
+# package source can then `opkg update && opkg install bifrost`.
 #
-# Usage: scripts/build-feed.sh
+# The feed is served from two places, both built by this script:
+#   • the master itself, at /bifrost/feed (baked into the server image)
+#   • GitHub Releases, published by CI (see .github/workflows/ci.yml)
+#
+# Usage: scripts/build-feed.sh [output-dir]
+#   Defaults to apps/spark-server/feed, which is what the Dockerfile bakes in.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-feed="$root/apps/spark-server/feed"
+feed="${1:-$root/apps/spark-server/feed}"
 mkdir -p "$feed"
+feed="$(cd "$feed" && pwd)"
 
 echo "== building bifrost-vpn .ipk =="
 "$root/apps/openwrt-client/build-ipk.sh" "$feed"

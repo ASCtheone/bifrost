@@ -39,8 +39,15 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
 ## Install on a GL.iNet router
 
 1. **Add the package source** — GL.iNet UI → **Applications → Plug-ins → Add source**:
-   `https://dash.asc.ninja/bifrost/feed`
-   (CLI: `echo "src/gz bifrost https://dash.asc.ninja/bifrost/feed" >> /etc/opkg/customfeeds.conf`)
+   `https://github.com/ASCtheone/bifrost/releases/latest/download`
+   (CLI: `echo "src/gz bifrost https://github.com/ASCtheone/bifrost/releases/latest/download" >> /etc/opkg/customfeeds.conf`)
+
+   This is the feed CI publishes on every release. `releases/latest/download` always
+   redirects to the newest release, so the router never needs the URL changed to pick
+   up a new version — just `opkg update`.
+
+   Your own master also serves the same feed at `https://<your-master>/bifrost/feed`
+   (baked into the server image), if you'd rather not depend on GitHub.
 2. **Install** — `opkg update`, then install **`bifrost`**.
 3. **Open the config page** — `http://<router-ip>:8099/`:
    - Press **Get a pairing code**.
@@ -78,7 +85,12 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
 ## Building
 
 - **Without the SDK**: `./build-ipk.sh` → `dist/bifrost_*.ipk` (gzip-tar ipk, no SDK needed).
-- The server image builds this automatically into its `/bifrost/feed`.
+- **The whole feed** (ipk + `Packages`/`Packages.gz` index): `scripts/build-feed.sh [outdir]`.
+- Both consumers use that one script, so the two feeds can't drift:
+  - the server image bakes it into `/bifrost/feed`;
+  - CI (`.github/workflows/ci.yml`, job `openwrt`) publishes it to GitHub Releases,
+    tagged `v<VERSION>`. Bump with `scripts/set-version.sh`, push to `master`, and the
+    release is cut automatically.
 
 ## Notes
 
