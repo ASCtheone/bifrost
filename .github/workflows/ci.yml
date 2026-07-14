@@ -200,8 +200,13 @@ jobs:
         id: ver
         run: echo "v=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
+      # Only our own build outputs. Without a pattern this also pulls the
+      # `.dockerbuild` summary artifact that docker/build-push-action uploads, which
+      # is both useless here and — when that job fails — undownloadable, which then
+      # fails the release for a reason having nothing to do with the release.
       - uses: actions/download-artifact@v4
         with:
+          pattern: bifrost-*
           path: staged
       - name: Collect assets
         run: |
