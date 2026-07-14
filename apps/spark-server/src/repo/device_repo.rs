@@ -157,3 +157,19 @@ pub async fn reset_for_resync(pool: &SqlitePool, device_id: &str) -> AppResult<(
     .await?;
     Ok(())
 }
+
+/// Re-address a device. Used when its IP was allocated before the spark's WireGuard
+/// subnet was known, so it landed outside it and the controller refuses the peer.
+pub async fn update_device_ip(
+    pool: &SqlitePool,
+    device_id: &str,
+    assigned_ip: &str,
+) -> AppResult<()> {
+    sqlx::query("UPDATE devices SET assigned_ip = ?, updated_at = ? WHERE device_id = ?")
+        .bind(assigned_ip)
+        .bind(now_iso())
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

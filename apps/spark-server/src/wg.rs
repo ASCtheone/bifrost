@@ -88,3 +88,58 @@ pub fn build_config(p: &WgConfigParams) -> String {
         allowed = p.allowed_ips.join(", "),
     )
 }
+
+/// Is `ip` inside the same /24 as `server_address` (a CIDR like "10.20.30.1/24")?
+///
+/// A peer address outside the WireGuard server's subnet is refused outright by UniFi
+/// (`api.err.UserIpDoesNotBelongToNetwork`), so this is what decides whether a device's
+/// stored address is still usable.
+pub fn ip_in_server_subnet(ip: &str, server_address: &str) -> bool {
+    fn base24(addr: &str) -> Option<String> {
+        let host = addr.split('/').next()?;
+        let o: Vec<&str> = host.split('.').collect();
+        if o.len() < 3 {
+            return None;
+        }
+        Some(format!("{}.{}.{}", o[0], o[1], o[2]))
+    }
+    match (base24(ip), base24(server_address)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod ip_tests {
+    use super::*;
+
+    #[test]
+    fn same_24_is_in_subnet() {
+        assert!(ip_in_server_subnet("10.20.30.155", "10.20.30.1/24"));
+    }
+
+    #[test]
+    fn the_real_failure_is_caught() {
+        // What UniFi rejected: allocated from the hardcoded 192.168.8.1/24 default
+        // because the spark had not yet reported its server.
+        assert!(!ip_in_server_subnet("192.168.8.155", "10.20.30.1/24"));
+    }
+
+    #[test]
+    fn reassignment_keeps_the_host_octet_and_lands_in_subnet() {
+        let ip = assign_ip("dev-abc", Some("10.20.30.1/24"));
+        assert!(ip_in_server_subnet(&ip, "10.20.30.1/24"));
+        // Deterministic: same device, same host octet, just rebased.
+        let old = assign_ip("dev-abc", None);
+        assert_eq!(
+            old.rsplit('.').next().unwrap(),
+            ip.rsplit('.').next().unwrap()
+        );
+    }
+
+    #[test]
+    fn garbage_is_not_in_subnet() {
+        assert!(!ip_in_server_subnet("", "10.20.30.1/24"));
+        assert!(!ip_in_server_subnet("10.20.30.5", ""));
+    }
+}

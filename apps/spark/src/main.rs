@@ -305,6 +305,13 @@ async fn heartbeat(
     };
 
     let mut body = json!({ "actualConfig": actual_config });
+    // Clear "creating on controller" once a server is actually bound. The dashboard sets
+    // pending_vpn_create when you ask for a spark VPN, and nothing ever cleared it — the
+    // Rust spark never implemented server creation — so the UI sat on "Creating on
+    // controller…" forever. Reporting a bound server is proof the work is done.
+    if server.is_some() {
+        body["pendingVpnCreate"] = json!(false);
+    }
     // Always present: `null` clears a previous error once the controller recovers.
     body["error"] = match error {
         Some(e) => json!(e),

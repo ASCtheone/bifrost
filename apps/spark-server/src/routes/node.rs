@@ -161,7 +161,78 @@ async fn heartbeat(
     };
 
     node_repo::update_heartbeat(&st.pool, &node_id, update).await?;
+
+    // Re-address any device whose IP predates our knowing this spark's subnet.
+    //
+    // wg::assign_ip derives a device's address from the WireGuard server's subnet, but
+    // falls back to a hardcoded 192.168.8.1/24 when the server isn't known yet — which
+    // is the case for any device created before the spark first heartbeated. UniFi then
+    // refuses the peer outright (api.err.UserIpDoesNotBelongToNetwork) and the device
+    // can never connect, with nothing in the UI to say why.
+    //
+    // The heartbeat is the moment we learn the real subnet, so it is the moment to fix
+    // it. The allocation is deterministic in the device id, so a device keeps its host
+    // octet and is simply rebased onto the right network — the same device always lands
+    // on the same address.
+    if let Some(node) = node_repo::get_node(&st.pool, &node_id).await? {
+        if let Some(subnet) = reported_server_subnet(&node) {
+            repair_device_ips(&st, &node, &subnet).await?;
+        }
+    }
+
     Ok(Json(json!({ "success": true })))
+}
+
+/// The WireGuard server subnet this spark manages, taken from what it just reported.
+///
+/// Prefer the named server (spark_vpn_name) when it's set, but fall back to the single
+/// reported server otherwise — the name is only populated when a VPN was created via
+/// the dashboard, and the IP repair must not wait on that. Returns None if there isn't
+/// exactly one unambiguous server address to key off.
+fn reported_server_subnet(node: &crate::domain::Node) -> Option<String> {
+    if let Some(s) = crate::routes::shared::spark_server_for(node) {
+        if !s.server_address.is_empty() {
+            return Some(s.server_address);
+        }
+    }
+    let servers = node.actual_config.as_ref()?.get("servers")?.as_array()?;
+    if servers.len() != 1 {
+        return None; // 0 = nothing yet; >1 = ambiguous, don't guess which
+    }
+    servers[0]
+        .get("serverAddress")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+async fn repair_device_ips(
+    st: &AppState,
+    node: &crate::domain::Node,
+    server_address: &str,
+) -> AppResult<()> {
+    let owner = node.owner_email.as_str();
+    for d in device_repo::query_all_devices(&st.pool).await? {
+        if d.status == "revoked" {
+            continue;
+        }
+        if !owner.is_empty() && !d.owner_email.is_empty() && d.owner_email != owner {
+            continue;
+        }
+        if crate::wg::ip_in_server_subnet(&d.assigned_ip, server_address) {
+            continue;
+        }
+        let fixed = crate::wg::assign_ip(&d.device_id, Some(server_address));
+        tracing::info!(
+            device = %d.device_id,
+            from = %d.assigned_ip,
+            to = %fixed,
+            subnet = %server_address,
+            "device address was outside the spark's WireGuard subnet — re-addressed"
+        );
+        device_repo::update_device_ip(&st.pool, &d.device_id, &fixed).await?;
+    }
+    Ok(())
 }
 
 /// GET /nodes/:nodeId/self  (node-key auth)
