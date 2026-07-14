@@ -215,7 +215,19 @@ EOF
 		$SUDO chmod 0600 "$TOML"  # not world-readable; root reads it regardless
 	fi
 
-	compose up -d
+	# --force-recreate, deliberately.
+	#
+	# `up -d` alone is a NO-OP for a container that is already running and whose
+	# compose spec hasn't changed. Everything this script edits — the adoption code,
+	# the config — lives in a file the spark reads once, at startup. So without this,
+	# writing a fresh adoption code appeared to succeed and changed nothing: the file
+	# on disk was right, the process kept running with the old value in memory, and the
+	# spark never re-registered. (Pulling a new image happens to recreate the
+	# container, which is why plain updates seemed to work.)
+	#
+	# Recreating on every run costs a couple of seconds of downtime and makes the
+	# outcome match what the script just said it did.
+	compose up -d --force-recreate
 }
 
 # ── native (static binary + systemd) ────────────────────────────
