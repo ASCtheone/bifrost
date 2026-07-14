@@ -10,7 +10,7 @@ mod unifi;
 use anyhow::{Context, Result};
 use config::{Config, State};
 use control::{Control, DesiredConfig};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -114,7 +114,7 @@ async fn tick(
         }
         *unifi = None;
         *applied = None;
-        heartbeat(control, node_id, node_key, None, &[]).await?;
+        heartbeat(control, node_id, node_key, None, &[], None).await?;
         return Ok(());
     };
     *idle_logged = false;
@@ -155,7 +155,15 @@ async fn adopt(cfg: &Config, control: &Control, state_dir: &std::path::Path, sta
     }
 }
 
-/// One reconcile cycle: pull desired config, apply to UniFi, heartbeat actual state.
+/// One reconcile cycle: apply the desired config to UniFi, then heartbeat.
+///
+/// The heartbeat is sent **whatever happens to UniFi**. It used to be reached only
+/// after a clean reconcile — one `?` on the first controller call and the whole cycle
+/// bailed out — so a spark whose controller was unreachable, or whose API key was
+/// refused, never heartbeated at all and sat there reading "offline" in the dashboard.
+/// That is exactly backwards: it is alive, it is talking to the control plane, and it
+/// has something useful to say (namely *why* UniFi is unhappy). Liveness must not
+/// depend on the health of the thing we are reporting on.
 async fn sync_once(
     control: &Control,
     unifi: &mut UnifiClient,
@@ -163,6 +171,26 @@ async fn sync_once(
     node_key: &str,
     desired: &DesiredConfig,
 ) -> Result<()> {
+    match reconcile(unifi, desired).await {
+        Ok((server, peers)) => {
+            heartbeat(control, node_id, node_key, server.as_ref(), &peers, None).await
+        }
+        Err(e) => {
+            let msg = format!("{e:#}");
+            tracing::warn!("unifi reconcile failed: {msg}");
+            // Still report in: online, with the reason, so the dashboard can show it.
+            heartbeat(control, node_id, node_key, None, &[], Some(&msg)).await?;
+            Err(e)
+        }
+    }
+}
+
+/// Bring the UniFi WireGuard server's peers in line with the desired config, and
+/// return what's actually there now.
+async fn reconcile(
+    unifi: &mut UnifiClient,
+    desired: &DesiredConfig,
+) -> Result<(Option<unifi::WgServer>, Vec<unifi::WgPeer>)> {
     // Pick the WireGuard server this spark manages.
     let servers = unifi.list_wg_servers().await?;
     let server = match &desired.vpn_name {
@@ -171,8 +199,7 @@ async fn sync_once(
     };
     let Some(server) = server.cloned() else {
         tracing::warn!("no WireGuard server on the UniFi controller yet — create one (server auto-creation not yet automated); reporting empty state");
-        heartbeat(control, node_id, node_key, None, &[]).await?;
-        return Ok(());
+        return Ok((None, Vec::new()));
     };
 
     // Reconcile peers.
@@ -211,15 +238,18 @@ async fn sync_once(
 
     // Report actual state.
     let peers_now = unifi.list_peers(&server.id).await.unwrap_or_default();
-    heartbeat(control, node_id, node_key, Some(&server), &peers_now).await
+    Ok((Some(server), peers_now))
 }
 
+/// `error` is surfaced on the node in the dashboard: a spark that is up but can't
+/// reach its controller should say so, not just look healthy or vanish.
 async fn heartbeat(
     control: &Control,
     node_id: &str,
     node_key: &str,
     server: Option<&unifi::WgServer>,
     peers: &[unifi::WgPeer],
+    error: Option<&str>,
 ) -> Result<()> {
     let actual_config = match server {
         Some(s) => json!({
@@ -239,6 +269,11 @@ async fn heartbeat(
     };
 
     let mut body = json!({ "actualConfig": actual_config });
+    // Always present: `null` clears a previous error once the controller recovers.
+    body["error"] = match error {
+        Some(e) => json!(e),
+        None => Value::Null,
+    };
     if let Some(s) = server {
         body["sparkVpnId"] = json!(s.id);
     }

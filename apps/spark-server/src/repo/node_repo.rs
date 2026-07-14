@@ -393,6 +393,9 @@ pub struct HeartbeatUpdate {
     pub spark_vpn_id: Option<String>,
     pub pending_vpn_create: Option<bool>,
     pub clear_peer_deletions: bool,
+    /// Always written. `None` clears it, so a spark that recovers stops showing a
+    /// stale error; `Some` records why UniFi is unhappy while the spark itself is fine.
+    pub error: Option<String>,
 }
 
 pub async fn update_heartbeat(
@@ -411,6 +414,7 @@ pub async fn update_heartbeat(
         v => Some(v.to_string()),
     };
     qb.push(", actual_config = ").push_bind(ac);
+    qb.push(", error = ").push_bind(u.error);
 
     if let Some(v) = u.wan_ip {
         qb.push(", wan_ip = ").push_bind(v);

@@ -149,6 +149,11 @@ async fn heartbeat(
         speed_ping: b.get("speedPing").and_then(Value::as_f64),
         spark_vpn_id: b.get("sparkVpnId").and_then(Value::as_str).map(String::from),
         pending_vpn_create: b.get("pendingVpnCreate").and_then(Value::as_bool),
+        error: b
+            .get("error")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .filter(|e| !e.is_empty()),
         clear_peer_deletions: b
             .get("clearPeerDeletions")
             .and_then(Value::as_bool)
