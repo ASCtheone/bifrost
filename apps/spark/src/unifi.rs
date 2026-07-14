@@ -158,7 +158,20 @@ impl UnifiClient {
                 }
             }
             if !status.is_success() {
-                bail!("unifi {method} {path} -> {status}");
+                // Include the body. UniFi explains every 4xx in it ("api.err.*", a
+                // validation message, the offending field) — throwing it away left a
+                // bare "400 Bad Request", which says only that something is wrong, not
+                // what. Debugging a rejected payload without it is pure guesswork.
+                let body = resp.text().await.unwrap_or_default();
+                let body = body.trim();
+                if body.is_empty() {
+                    bail!("unifi {method} {path} -> {status}");
+                }
+                let mut brief: String = body.chars().take(400).collect();
+                if body.chars().count() > 400 {
+                    brief.push('…');
+                }
+                bail!("unifi {method} {path} -> {status}: {brief}");
             }
             let text = resp.text().await.unwrap_or_default();
             return Ok(serde_json::from_str(&text).unwrap_or(Value::Null));

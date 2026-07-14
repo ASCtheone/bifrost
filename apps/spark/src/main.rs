@@ -185,6 +185,35 @@ async fn sync_once(
     }
 }
 
+/// The name a peer gets on the controller.
+///
+/// Device names in Bifrost are free text ("Miguel Router"), but UniFi validates
+/// WireGuard peer names and rejects the request outright — a bare 400 with no hint —
+/// when they contain characters it doesn't like, a space being the usual culprit. So
+/// everything outside [A-Za-z0-9._-] becomes a dash, runs are collapsed, and the
+/// result is capped: a peer we cannot name is a peer we cannot create.
+fn peer_name(device_name: &str) -> String {
+    let mut out = String::from("bifrost-");
+    let mut last_dash = out.ends_with('-');
+    for ch in device_name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_end_matches('-');
+    let capped: String = trimmed.chars().take(48).collect();
+    let capped = capped.trim_end_matches('-').to_string();
+    if capped == "bifrost" {
+        "bifrost-device".to_string() // a name of nothing but separators
+    } else {
+        capped
+    }
+}
+
 /// Bring the UniFi WireGuard server's peers in line with the desired config, and
 /// return what's actually there now.
 async fn reconcile(
@@ -213,7 +242,7 @@ async fn reconcile(
         }
         let ip = dp.assigned_ip.split('/').next().unwrap_or(&dp.assigned_ip).to_string();
         let new = NewPeer {
-            name: format!("bifrost-{}", dp.name),
+            name: peer_name(&dp.name),
             interface_ip: ip,
             public_key: dp.public_key.clone(),
             preshared_key: dp.preshared_key.clone(),
@@ -221,7 +250,14 @@ async fn reconcile(
         };
         match unifi.create_peer(&server.id, &new).await {
             Ok(()) => created += 1,
-            Err(e) => tracing::warn!("create peer {} failed: {e:#}", dp.name),
+            // The payload is logged too: a rejected create is almost always a field
+            // the controller didn't like, and guessing at it from the outside is how
+            // this took several rounds to pin down.
+            Err(e) => tracing::warn!(
+                payload = %serde_json::to_string(&new).unwrap_or_default(),
+                "create peer {} failed: {e:#}",
+                dp.name
+            ),
         }
     }
 
@@ -282,4 +318,39 @@ async fn heartbeat(
     // on a host that can reach the master but not the open internet, and a node cannot
     // claim an address that isn't its own.
     control.heartbeat(node_id, node_key, &body).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_name;
+
+    #[test]
+    fn spaces_become_dashes() {
+        // The exact name that got a bare 400 from the controller.
+        assert_eq!(peer_name("Miguel Router"), "bifrost-Miguel-Router");
+    }
+
+    #[test]
+    fn collapses_runs_and_trims() {
+        assert_eq!(peer_name("  a  //  b  "), "bifrost-a-b");
+        assert_eq!(peer_name("trailing!!!"), "bifrost-trailing");
+    }
+
+    #[test]
+    fn keeps_safe_characters() {
+        assert_eq!(peer_name("phone_1.2-x"), "bifrost-phone_1.2-x");
+    }
+
+    #[test]
+    fn a_name_of_only_separators_still_yields_something() {
+        assert_eq!(peer_name("   "), "bifrost-device");
+        assert_eq!(peer_name("!!!"), "bifrost-device");
+    }
+
+    #[test]
+    fn caps_the_length() {
+        let n = peer_name(&"x".repeat(200));
+        assert!(n.len() <= 48, "got {} chars", n.len());
+        assert!(n.starts_with("bifrost-"));
+    }
 }
