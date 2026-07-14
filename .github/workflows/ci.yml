@@ -167,9 +167,15 @@ jobs:
           set -euo pipefail
           bin="target/${{ matrix.target }}/release/bifrost-spark"
           file "$bin"
-          # A dynamically-linked binary here would fail on the user's host with a
-          # confusing loader error, so make static a hard requirement.
-          file "$bin" | grep -q "statically linked" || { echo "::error::$bin is not static"; exit 1; }
+          # A dynamically-linked binary would die with a confusing loader error on
+          # the user's host, so reject that specifically. Note musl emits a
+          # "static-pie linked" binary on x86_64 and "statically linked" on aarch64 —
+          # both are static, so assert the absence of a dynamic link rather than
+          # matching one of those spellings.
+          if file "$bin" | grep -q "dynamically linked"; then
+            echo "::error::$bin is dynamically linked — it must be static"
+            exit 1
+          fi
           mkdir -p ../../dist
           install -m 0755 "$bin" "../../dist/bifrost-spark-${{ matrix.arch }}-linux"
 
@@ -223,6 +229,10 @@ jobs:
           # Heredoc (not an inline --notes string): keeps the body free of the
           # YAML block's indentation, which Markdown would render as code.
           cat > notes.md <<EOF
+          ## Dashboard
+
+          <https://dash.asc.ninja/bifrost>
+
           ## Spark
 
           Install or update a spark (asks Docker or systemd on first run; remembers
@@ -234,12 +244,17 @@ jobs:
 
           ## GL.iNet / OpenWrt router
 
+          Package feed: <https://github.com/${{ github.repository }}/releases/latest/download>
+
           \`\`\`sh
           echo 'src/gz bifrost https://github.com/${{ github.repository }}/releases/latest/download' >> /etc/opkg/customfeeds.conf
           opkg update && opkg install bifrost
           \`\`\`
 
-          The router's config page then lives at \`http://bifrost.lan/\`.
+          The router's config page is then at **<https://bifrost.lan/>** (self-signed —
+          your browser will warn once; no CA can issue a trusted cert for a \`.lan\`
+          name). Plain <http://bifrost.lan/> works too, as does
+          \`http://<router-ip>:8099/\`.
           EOF
           sed -i 's/^          //' notes.md
 
