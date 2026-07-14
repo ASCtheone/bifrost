@@ -32,6 +32,10 @@ pub struct WgServer {
     pub server_address: String,
     pub server_port: i64,
     pub public_key: String,
+    /// The raw controller object, compacted — logged when a field (e.g. the public
+    /// key) comes back empty, so a firmware naming difference is diagnosable from the
+    /// log instead of guessed at.
+    pub raw: String,
 }
 
 /// A WireGuard peer (client) on a server.
@@ -202,7 +206,21 @@ impl UnifiClient {
                     .unwrap_or_default()
                     .to_string(),
                 server_port: n.get("local_port").and_then(Value::as_i64).unwrap_or(0),
-                public_key: n.get("wireguard_public_key").and_then(Value::as_str).unwrap_or_default().to_string(),
+                public_key: n
+                    .get("wireguard_public_key")
+                    .or_else(|| n.get("x_wireguard_public_key"))
+                    .or_else(|| n.get("public_key"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                raw: {
+                    // Compact, and without private-key-ish fields.
+                    let mut o = n.clone();
+                    if let Some(map) = o.as_object_mut() {
+                        map.retain(|k, _| !k.contains("private") && !k.contains("secret"));
+                    }
+                    serde_json::to_string(&o).unwrap_or_default().chars().take(600).collect::<String>()
+                },
             })
             .collect())
     }

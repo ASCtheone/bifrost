@@ -231,6 +231,23 @@ async fn reconcile(
         return Ok((None, Vec::new()));
     };
 
+    tracing::info!(
+        id = %server.id, name = %server.name, subnet = %server.server_address,
+        port = server.server_port, pubkey_len = server.public_key.len(),
+        "using UniFi WireGuard server"
+    );
+    // An empty public key means the control plane will refuse to build device configs
+    // (a peer with no server key can't connect), so the router shows "no spark". If it
+    // reads 0 here, `wireguard_public_key` is the wrong field name for this firmware —
+    // the raw object below shows what the controller actually returned.
+    if server.public_key.is_empty() {
+        tracing::warn!(
+            raw = %server.raw,
+            "UniFi server has no public key under 'wireguard_public_key' — device configs cannot be built; \
+             this is the field-name mismatch to fix"
+        );
+    }
+
     // Reconcile peers.
     let actual = unifi.list_peers(&server.id).await?;
     let actual_pks: HashSet<&str> = actual.iter().map(|p| p.public_key.as_str()).collect();
