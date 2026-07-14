@@ -63,6 +63,10 @@ jobs:
       - name: FontAwesome build secret
         if: ${{ env.FA_TOKEN != '' }}
         run: printf '%s' "$FA_TOKEN" > fa_token
+      - name: Read unified version
+        if: ${{ env.FA_TOKEN != '' }}
+        id: ver
+        run: echo "v=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Server image (dashboard + Rust)
         if: ${{ env.FA_TOKEN != '' }}
@@ -74,6 +78,7 @@ jobs:
           secret-files: fontawesome_token=fa_token
           tags: |
             ghcr.io/asctheone/bifrost-server:latest
+            ghcr.io/asctheone/bifrost-server:${{ steps.ver.outputs.v }}
             ghcr.io/asctheone/bifrost-server:${{ github.sha }}
 
       - name: Spark image (on-site UniFi bridge)
@@ -84,4 +89,5 @@ jobs:
           push: ${{ env.PUSH == 'true' }}
           tags: |
             ghcr.io/asctheone/bifrost-spark:latest
+            ghcr.io/asctheone/bifrost-spark:${{ steps.ver.outputs.v }}
             ghcr.io/asctheone/bifrost-spark:${{ github.sha }}

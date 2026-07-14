@@ -24,6 +24,7 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
+BIFROST_VERSION=0.3.0
 
 mkdir -p "$STATE_DIR"
 
@@ -330,8 +331,8 @@ cmd_json() {
 	# Available locations (from the last provision), for the UI picker.
 	nodes='[]'
 	[ -f "$RESP" ] && nodes=$(jq -c '[.nodes[] | {nodeId, name, location, role}]' "$RESP" 2>/dev/null || echo '[]')
-	printf '{"state":"%s","handshakeAge":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
-		"$state" "$age" \
+	printf '{"state":"%s","handshakeAge":"%s","version":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
+		"$state" "$age" "$BIFROST_VERSION" \
 		"$([ -n "$token" ] && echo true || echo false)" \
 		"$(cfg_get device_code)" "$(master)" "$(cfg_get location)" \
 		"$([ "$(cfg_get killswitch)" = 1 ] && echo true || echo false)" \

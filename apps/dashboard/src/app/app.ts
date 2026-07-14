@@ -5,6 +5,7 @@ import { AuthService } from './services/auth.service';
 import { ThemeService, type ThemeMode } from './services/theme.service';
 import { ConfirmService } from './services/confirm.service';
 import { gravatarUrl as getGravatarUrl } from './utils/md5';
+import { environment } from '../environments/environment';
 
 @Component({
   selector: 'app-root',
@@ -32,7 +33,7 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
                 <div class="dropdown" (click)="menuOpen.set(false)">
                   <div class="dropdown-header">
                     <div class="dropdown-email">{{ userEmail() }}</div>
-                    <div class="dropdown-role">Administrator</div>
+                    <div class="dropdown-role">Administrator{{ version() ? ' · v' + version() : '' }}</div>
                   </div>
                   <div class="dropdown-divider"></div>
                   <button class="dropdown-item" routerLink="/settings">
@@ -222,6 +223,7 @@ export class App implements OnInit, OnDestroy {
   userEmail = signal('');
   userInitials = signal('');
   gravatarUrl = signal('');
+  version = signal('');
 
   private readonly routeTitles: Record<string, string> = {
     '/dashboard': 'Dashboard',
@@ -237,6 +239,11 @@ export class App implements OnInit, OnDestroy {
     if (user) {
       this.setUserInfo(user.email);
     }
+    // Server version (all components share one version) for the account menu.
+    fetch(`${environment.apiUrl}/health`)
+      .then((r) => r.json())
+      .then((d) => this.version.set(d?.version ?? ''))
+      .catch(() => {});
 
     // Watch for auth changes. Only kick unauthenticated users off *protected*
     // routes — the landing, login and setup pages are public.

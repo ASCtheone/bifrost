@@ -114,6 +114,7 @@
     </div>
 
     <div class="msg" id="msg"></div>
+    <div style="margin-top:16px;text-align:center;color:var(--dim);font-size:11px;" id="ver"></div>
   </div>
 
 <script>
@@ -128,6 +129,7 @@
 
   function paint(data) {
     var dot = $('dot'), t = $('statusText');
+    if (data.version) $('ver').textContent = 'bifrost v' + data.version;
     if (data.state === 'up') {
       dot.style.background = 'var(--success)';
       t.textContent = 'Connected — last handshake ' + (data.handshakeAge || '?') + 's ago';
