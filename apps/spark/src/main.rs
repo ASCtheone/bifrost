@@ -36,9 +36,17 @@ async fn main() -> Result<()> {
     let control = Control::new(cfg.master_url())?;
 
     // ── Adoption (once) ─────────────────────────────────────────
+    //
+    // Retry in-process rather than exiting. Bailing out makes the container die and
+    // be restarted, which turns a plain "the master is unreachable" or "that code is
+    // spent" into a crash-loop — and buries the actual reason under restart noise.
+    // Here the error is logged every cycle and stays readable in `docker logs`.
     let mut state = State::load(&state_dir);
-    if !state.is_adopted() {
-        adopt(&cfg, &control, &state_dir, &mut state).await?;
+    while !state.is_adopted() {
+        if let Err(e) = adopt(&cfg, &control, &state_dir, &mut state).await {
+            tracing::warn!("adoption failed: {e:#} — retrying in 30s");
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
     }
     let node_id = state.node_id.clone().unwrap();
     let node_key = state.node_key.clone().unwrap();

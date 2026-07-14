@@ -42,8 +42,22 @@ async fn register(
             return Err(AppError::Gone("Adoption code has expired".into()));
         }
     }
+    // Registering is idempotent for the same code. A spark that restarts before it
+    // has been adopted — a container bounce, a re-run of the installer — sends the
+    // same code again; 409-ing that would crash-loop it for doing the right thing.
+    // The code is still the credential, and it is unchanged, so nothing is granted
+    // here that wasn't already.
+    if node.adoption_status == "available" {
+        return Ok(Json(json!({ "success": true, "nodeId": node.node_id })));
+    }
+    // 'adopted'/'revoked' are different: the node already has (or had) a key, and the
+    // one-shot handoff is long gone, so re-registering cannot get it one. The operator
+    // has to Reinstall (which reissues a code and returns the node to 'pending').
     if node.adoption_status != "pending" {
-        return Err(AppError::Conflict(format!("Node is already {}", node.adoption_status)));
+        return Err(AppError::Conflict(format!(
+            "Node is already {} — use Reinstall in the dashboard to issue a new adoption code",
+            node.adoption_status
+        )));
     }
     node_repo::update_adoption_status(&st.pool, &node.node_id, "available").await?;
     Ok(Json(json!({ "success": true, "nodeId": node.node_id })))

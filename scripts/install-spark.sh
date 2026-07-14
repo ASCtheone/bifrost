@@ -182,6 +182,24 @@ EOF
        credential: try 'sudo docker logout ghcr.io' and re-run. If you need this
        host logged in to ghcr.io, re-login with a valid token."
 	fi
+
+	# The image runs as a NON-ROOT user (USER bifrost in the Dockerfile), but this
+	# script writes the config as root with mode 0600 — so the container could not
+	# read its own config ("Permission denied (os error 13)") and could not write
+	# spark-state.json into the root-owned directory to persist its node key.
+	#
+	# Hand both to whatever uid the image actually runs as. Asking the image rather
+	# than hardcoding 10001 means this keeps working if that ever changes.
+	uid=$($SUDO docker run --rm --entrypoint id "$IMAGE" -u 2>/dev/null || true)
+	case "${uid:-}" in
+		'' | *[!0-9]*) uid=10001 ;; # not a plain uid (e.g. root image) — fall back
+	esac
+	if [ "$uid" != 0 ]; then
+		$SUDO chown "$uid:$uid" "$DIR" "$TOML"
+		$SUDO chmod 0700 "$DIR"   # dir must be writable by the container (state file)
+		$SUDO chmod 0600 "$TOML"  # still not world-readable; root can read regardless
+	fi
+
 	( cd "$DIR" && $SUDO docker compose up -d )
 }
 
