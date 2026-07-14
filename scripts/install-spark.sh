@@ -84,10 +84,13 @@ fetch() { # fetch <url> <dest>
 
 # An existing install decides its own mode. This is what makes re-running the
 # one-liner an update rather than a re-interrogation.
+# Read it as ROOT. The install directory is owned by the container's uid and is not
+# traversable by the invoking user, so a bare `[ -f "$CONF" ]` fails — and the script
+# would conclude there is no install and start a fresh one over the top of a working
+# spark, re-asking for a mode and an adoption code.
 load_mode() {
-	[ -f "$CONF" ] || return 1
-	# shellcheck disable=SC1090
-	. "$CONF"
+	$SUDO test -f "$CONF" || return 1
+	MODE=$($SUDO sed -n 's/^MODE=//p' "$CONF" | head -n1)
 	[ -n "${MODE:-}" ]
 }
 
@@ -277,7 +280,10 @@ EOF
 # Only on a *different* code: re-running with the same one (or none) must not disturb
 # a healthy spark, which is the whole point of the update path.
 adopt_new_code() {
-	cur=$(sed -n 's/^adoption_code *= *"\(.*\)"/\1/p' "$TOML" 2>/dev/null | head -n1)
+	# As root: the config is 0600 and owned by the container's uid, so reading it as
+	# the invoking user yields nothing — which previously looked like "no adoption
+	# code in the file" ("was none") when in fact the file just wasn't readable.
+	cur=$($SUDO sed -n 's/^adoption_code *= *"\(.*\)"/\1/p' "$TOML" 2>/dev/null | head -n1)
 	[ -n "${BIFROST_ADOPTION_CODE:-}" ] || return 0
 	if [ "$BIFROST_ADOPTION_CODE" = "$cur" ]; then
 		# Say so explicitly. Silence here is indistinguishable from a script that
