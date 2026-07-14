@@ -18,13 +18,24 @@ pub struct SparkServer {
 }
 
 /// Find the spark server snapshot for a node, if the agent has reported one.
+/// The UniFi WireGuard server this spark manages, from what it last reported.
+///
+/// If `spark_vpn_name` is set (a VPN created through the dashboard), match that
+/// server by name. Otherwise fall back to the sole reported server — the name is
+/// only populated by the create-VPN flow, and a device must not be denied a config
+/// just because the operator picked an existing server instead of creating one
+/// through us. This is what a router hits: without the fallback, `build_device_configs`
+/// skips the node and the router shows "No spark available yet" despite a healthy
+/// spark. With zero or several servers reported there is nothing unambiguous to pick.
 pub fn spark_server_for(node: &Node) -> Option<SparkServer> {
-    let name = node.spark_vpn_name.as_deref()?;
-    let cfg = node.actual_config.as_ref()?;
-    let servers = cfg.get("servers")?.as_array()?;
-    let s = servers
-        .iter()
-        .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))?;
+    let servers = node.actual_config.as_ref()?.get("servers")?.as_array()?;
+    let s = match node.spark_vpn_name.as_deref() {
+        Some(name) => servers
+            .iter()
+            .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))?,
+        None if servers.len() == 1 => &servers[0],
+        None => return None,
+    };
     Some(SparkServer {
         public_key: s.get("publicKey").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         server_port: s.get("serverPort").and_then(|v| v.as_i64()).unwrap_or(51820),
