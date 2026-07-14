@@ -55,6 +55,11 @@ export const routes: Routes = [
           import('./pages/users/users.page').then((m) => m.UsersPage),
       },
       {
+        path: 'settings',
+        loadComponent: () =>
+          import('./pages/settings/settings.page').then((m) => m.SettingsPage),
+      },
+      {
         path: 'admin/sparks',
         canActivate: [superadminGuard],
         loadComponent: () =>

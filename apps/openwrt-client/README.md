@@ -102,6 +102,26 @@ macOS, iOS and Windows resolve it *only* over multicast — a dnsmasq record for
 `.local` would silently fail on exactly those clients. Names in the LAN's own
 domain resolve everywhere, with no extra daemon.
 
+### HTTPS (`option ui_https`, default on)
+
+`https://bifrost.lan/` also works, via the same trick one port up: a TLS uhttpd on
+`:8443`, with `alias:443 → alias:8443` redirected. (GL.iNet's uhttpd wildcard-binds
+`:443` too whenever its UI serves HTTPS, so a listener on `<alias>:443` would hit
+the same `EADDRINUSE` wall as `:80`.)
+
+**The certificate is self-signed, and browsers will warn.** This is not a bug and
+cannot be fixed: no CA can issue a trusted certificate for `bifrost.lan`, because
+`.lan` is not a public domain and cannot be domain-validated. The cert does carry a
+proper `subjectAltName` for both the name and the alias IP, so browsers offer the
+usual click-through instead of a hard rejection — but the "not private" interstitial
+on first visit is unavoidable. If that bothers you more than plain HTTP does, set
+`option ui_https '0'`; the page stays on HTTP, which is what GL.iNet's own admin UI
+uses, and it is LAN-only either way.
+
+Generating the key needs `openssl` (preferred — it can write the SAN) or `px5g`. If
+neither is on the firmware, HTTPS is skipped and the page stays on HTTP;
+`opkg install openssl-util` enables it. `bifrost ui-check` reports which.
+
 ## Config (`/etc/config/bifrost`)
 
 | Option             | Default   | Meaning                                                       |

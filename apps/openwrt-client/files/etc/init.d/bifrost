@@ -25,6 +25,19 @@ start_service() {
 	procd_set_param respawn
 	procd_close_instance
 
+	# HTTPS, when `bifrost ui-setup` managed to make a self-signed cert. Same
+	# reasoning as :80 — GL.iNet's uhttpd wildcard-binds :443 as well when its UI
+	# serves HTTPS, so we listen high and let a NAT redirect bring 443 here.
+	if [ "$(uci -q get bifrost.settings.ui_https)" != 0 ] &&
+		[ -s /etc/bifrost/ssl/cert.pem ] && [ -s /etc/bifrost/ssl/key.pem ]; then
+		procd_open_instance webui_tls
+		procd_set_param command /usr/sbin/uhttpd -f -s 0.0.0.0:8443 \
+			-C /etc/bifrost/ssl/cert.pem -K /etc/bifrost/ssl/key.pem \
+			-h /www/bifrost -x /cgi-bin -t 60 -T 30
+		procd_set_param respawn
+		procd_close_instance
+	fi
+
 	# VPN agent — always running; it reacts to the uci config (pairing, enabled,
 	# location, kill switch) each cycle, so the web UI never has to restart procd.
 	procd_open_instance agent

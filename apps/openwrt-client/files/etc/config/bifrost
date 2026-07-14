@@ -39,3 +39,12 @@ config bifrost 'settings'
 	# The alias address, chosen at install from a free slot in the LAN /24 (outside
 	# the DHCP pool). Empty = no alias (e.g. LAN isn't a /24) → :8099 only.
 	option ui_alias_ip ''
+
+	# Serve the page over HTTPS as well (https://bifrost.lan/). Set 0 to disable.
+	#
+	# The certificate is necessarily SELF-SIGNED: no CA can issue a trusted cert
+	# for a .lan name, because it isn't a public domain and can't be validated. So
+	# browsers will show a warning the first time. Needs openssl (or px5g) on the
+	# router to generate the key — without one, HTTPS is skipped and the page stays
+	# on HTTP. `bifrost ui-check` tells you which.
+	option ui_https '1'

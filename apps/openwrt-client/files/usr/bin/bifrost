@@ -24,7 +24,7 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.3.1
+BIFROST_VERSION=0.3.2
 
 mkdir -p "$STATE_DIR"
 
@@ -404,6 +404,46 @@ ui_pick_alias() {
 	return 1
 }
 
+SSL_DIR=/etc/bifrost/ssl
+SSL_CRT="$SSL_DIR/cert.pem"
+SSL_KEY="$SSL_DIR/key.pem"
+
+# Generate a self-signed cert for the config page, if we can.
+#
+# Nothing can issue a *trusted* cert for a .lan name — it isn't a public domain,
+# so no CA can validate it. Self-signed is the only option, and browsers will show
+# an interstitial the first time. HTTP on :8099 keeps working regardless.
+#
+# The cert needs a subjectAltName: modern browsers ignore CN entirely and reject a
+# SAN-less cert outright rather than offering the click-through. openssl can do
+# that; px5g (the tiny OpenWrt generator) generally can't, so it's the fallback.
+# If neither exists we skip TLS rather than half-enable it.
+ui_cert_ensure() {
+	local alias="$1" domain="$2"
+	[ -s "$SSL_CRT" ] && [ -s "$SSL_KEY" ] && return 0
+	mkdir -p "$SSL_DIR"
+	if command -v openssl >/dev/null 2>&1; then
+		openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+			-keyout "$SSL_KEY" -out "$SSL_CRT" \
+			-subj "/CN=$domain" \
+			-addext "subjectAltName=DNS:$domain,IP:$alias" >/dev/null 2>&1 || return 1
+	elif command -v px5g >/dev/null 2>&1; then
+		# No SAN support — browsers will flag the name as well as the issuer.
+		px5g selfsigned -days 3650 -newkey rsa:2048 \
+			-keyout "$SSL_KEY" -out "$SSL_CRT" -subj "/CN=$domain" >/dev/null 2>&1 || return 1
+	else
+		return 1
+	fi
+	chmod 0600 "$SSL_KEY"
+	[ -s "$SSL_CRT" ] && [ -s "$SSL_KEY" ]
+}
+
+# Is HTTPS both wanted and possible?
+ui_https_on() {
+	[ "$(cfg_get ui_https)" = 0 ] && return 1
+	[ -s "$SSL_CRT" ] && [ -s "$SSL_KEY" ]
+}
+
 # Idempotent: safe to re-run on upgrade (postinst calls it every install).
 cmd_ui_setup() {
 	local domain alias dev zone
@@ -450,6 +490,35 @@ cmd_ui_setup() {
 	uci set firewall.bifrost_ui80.src_dport='80'
 	uci set firewall.bifrost_ui80.dest_ip="$alias"
 	uci set firewall.bifrost_ui80.dest_port='8099'
+
+	# HTTPS, same shape: alias:443 → alias:8443. GL.iNet's uhttpd wildcard-binds
+	# :443 too when its UI serves HTTPS, so a TLS listener on <alias>:443 would hit
+	# exactly the EADDRINUSE trap that :80 did. Redirect instead.
+	if [ "$(cfg_get ui_https)" != 0 ] && ui_cert_ensure "$alias" "$domain"; then
+		uci set firewall.bifrost_ui443=redirect
+		uci set firewall.bifrost_ui443.name='Bifrost-UI-443'
+		uci set firewall.bifrost_ui443.target='DNAT'
+		uci set firewall.bifrost_ui443.src='lan'
+		uci set firewall.bifrost_ui443.proto='tcp'
+		uci set firewall.bifrost_ui443.src_dip="$alias"
+		uci set firewall.bifrost_ui443.src_dport='443'
+		uci set firewall.bifrost_ui443.dest_ip="$alias"
+		uci set firewall.bifrost_ui443.dest_port='8443'
+		# The DNAT lands on :8443, so the input rule must allow that port.
+		uci set firewall.bifrost_ui_tls=rule
+		uci set firewall.bifrost_ui_tls.name='Bifrost-UI-TLS'
+		uci set firewall.bifrost_ui_tls.src='lan'
+		uci set firewall.bifrost_ui_tls.proto='tcp'
+		uci set firewall.bifrost_ui_tls.dest_port='8443'
+		uci set firewall.bifrost_ui_tls.target='ACCEPT'
+	else
+		# No cert (no openssl/px5g on this firmware, or explicitly disabled) —
+		# tear down any HTTPS bits from a previous install and stay on HTTP.
+		uci -q delete firewall.bifrost_ui443
+		uci -q delete firewall.bifrost_ui_tls
+		[ "$(cfg_get ui_https)" != 0 ] && \
+			log "no openssl or px5g — HTTPS unavailable; page stays on HTTP (opkg install openssl-util to enable)"
+	fi
 	uci commit firewall
 
 	uci -q del_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
@@ -476,8 +545,11 @@ cmd_ui_teardown() {
 	}
 	zone=$(ui_lan_zone) && uci -q del_list "firewall.@zone[$zone].network=bifrost_ui"
 	uci -q delete firewall.bifrost_ui80
+	uci -q delete firewall.bifrost_ui443
+	uci -q delete firewall.bifrost_ui_tls
 	uci commit firewall
 	uci -q delete network.bifrost_ui && uci commit network
+	rm -rf "$SSL_DIR"
 	/etc/init.d/network reload >/dev/null 2>&1
 	/etc/init.d/dnsmasq reload >/dev/null 2>&1
 	/etc/init.d/firewall reload >/dev/null 2>&1
@@ -495,11 +567,18 @@ cmd_ui_check() {
 	echo "on $(lan_dev):  $(ip -4 -o addr show "$(lan_dev)" 2>/dev/null | awk '{printf "%s ", $4}')"
 	echo "dns:       $(nslookup "$domain" 127.0.0.1 2>/dev/null | awk '/^Address/ {a=$NF} END {print (a ? a : "does not resolve")}')"
 	if uci -q get firewall.bifrost_ui80.src_dip >/dev/null 2>&1; then
-		echo "redirect:  $(uci -q get firewall.bifrost_ui80.src_dip):80 -> $(uci -q get firewall.bifrost_ui80.dest_port)"
+		echo "http:      $(uci -q get firewall.bifrost_ui80.src_dip):80 -> $(uci -q get firewall.bifrost_ui80.dest_port)"
 	else
-		echo "redirect:  MISSING — run 'bifrost ui-setup'"
+		echo "http:      redirect MISSING — run 'bifrost ui-setup'"
 	fi
-	echo "listening: $(netstat -ltn 2>/dev/null | awk '$4 ~ /:8099$/ {printf "%s ", $4}')"
+	if ui_https_on; then
+		echo "https:     $(uci -q get firewall.bifrost_ui443.src_dip):443 -> $(uci -q get firewall.bifrost_ui443.dest_port)  (self-signed — browsers warn)"
+	elif [ "$(cfg_get ui_https)" = 0 ]; then
+		echo "https:     disabled (ui_https=0)"
+	else
+		echo "https:     no cert — needs openssl or px5g (opkg install openssl-util)"
+	fi
+	echo "listening: $(netstat -ltn 2>/dev/null | awk '$4 ~ /:(8099|8443)$/ {printf "%s ", $4}')"
 	echo "url:       $(ui_url)"
 }
 
@@ -509,7 +588,11 @@ ui_url() {
 	domain=$(cfg_get ui_domain)
 	alias=$(cfg_get ui_alias_ip)
 	if [ -n "$domain" ] && [ -n "$alias" ]; then
-		echo "http://$domain/"
+		if ui_https_on; then
+			echo "https://$domain/"
+		else
+			echo "http://$domain/"
+		fi
 	else
 		echo "http://$(lan_ip):8099/"
 	fi
