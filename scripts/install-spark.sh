@@ -236,6 +236,28 @@ EOF
 	$SUDO systemctl restart bifrost-spark
 }
 
+# On an existing install, honour an adoption code that differs from the stored one.
+#
+# The dashboard's Reinstall mints a fresh code and revokes the spark's node key, so
+# the one-liner you copy afterwards carries a NEW code. Without this, the update path
+# would skip write_config, leave the old (now dead) code in place, and keep the old
+# node key — and the spark would sit there re-authenticating with a revoked key,
+# never re-registering, with nothing in the UI to explain why.
+#
+# Only on a *different* code: re-running with the same one (or none) must not disturb
+# a healthy spark, which is the whole point of the update path.
+adopt_new_code() {
+	cur=$(sed -n 's/^adoption_code *= *"\(.*\)"/\1/p' "$TOML" 2>/dev/null | head -n1)
+	[ -n "${BIFROST_ADOPTION_CODE:-}" ] || return 0
+	[ "$BIFROST_ADOPTION_CODE" != "$cur" ] || return 0
+
+	say "New adoption code supplied — re-registering this spark."
+	$SUDO sh -c "sed -i 's|^adoption_code *=.*|adoption_code = \"$BIFROST_ADOPTION_CODE\"|' '$TOML'"
+	# The old node key was revoked when the code was reissued; drop the adoption
+	# state so the spark registers again instead of retrying a dead credential.
+	$SUDO rm -f "$DIR/spark-state.json"
+}
+
 # ── main ────────────────────────────────────────────────────────
 
 need_root
@@ -243,6 +265,7 @@ need_root
 if load_mode; then
 	UPDATING=1
 	say "Existing spark install found in $DIR (mode: $MODE) — updating."
+	adopt_new_code
 else
 	UPDATING=0
 	choose_mode
