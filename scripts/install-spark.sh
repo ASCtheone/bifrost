@@ -152,6 +152,16 @@ install_docker() {
 	have_docker || die "Docker installed but 'docker compose' is unavailable"
 }
 
+# Compose, always as root and never depending on the caller's cwd.
+#
+# `cd "$DIR" && $SUDO docker compose ...` runs the cd as the INVOKING user, who
+# cannot enter the directory once it is chowned to the container's uid and locked to
+# 0700 — "can't cd to /opt/bifrost-spark". --project-directory gives compose the same
+# context without anyone having to cd, and root can always reach it.
+compose() {
+	$SUDO docker compose --project-directory "$DIR" -f "$DIR/docker-compose.yml" "$@"
+}
+
 setup_docker() {
 	install_docker
 	$SUDO sh -c "cat > '$DIR/docker-compose.yml'" <<EOF
@@ -174,10 +184,10 @@ EOF
 	#
 	# Drop the stale credential and retry once, rather than surfacing a bare
 	# "denied" that says nothing about the cause.
-	if ! ( cd "$DIR" && $SUDO docker compose pull ); then
+	if ! compose pull; then
 		warn "pull failed — retrying without any stored ghcr.io credentials"
 		$SUDO docker logout ghcr.io >/dev/null 2>&1 || true
-		( cd "$DIR" && $SUDO docker compose pull ) || die \
+		compose pull || die \
 			"could not pull $IMAGE. The image is public, so this is usually a stale
        credential: try 'sudo docker logout ghcr.io' and re-run. If you need this
        host logged in to ghcr.io, re-login with a valid token."
@@ -195,12 +205,14 @@ EOF
 		'' | *[!0-9]*) uid=10001 ;; # not a plain uid (e.g. root image) — fall back
 	esac
 	if [ "$uid" != 0 ]; then
+		# Only the config and the dir — NOT docker-compose.yml or install.conf, which
+		# are ours and stay root-owned.
 		$SUDO chown "$uid:$uid" "$DIR" "$TOML"
-		$SUDO chmod 0700 "$DIR"   # dir must be writable by the container (state file)
-		$SUDO chmod 0600 "$TOML"  # still not world-readable; root can read regardless
+		$SUDO chmod 0750 "$DIR"   # container must be able to write spark-state.json here
+		$SUDO chmod 0600 "$TOML"  # not world-readable; root reads it regardless
 	fi
 
-	( cd "$DIR" && $SUDO docker compose up -d )
+	compose up -d
 }
 
 # ── native (static binary + systemd) ────────────────────────────
@@ -275,7 +287,15 @@ adopt_new_code() {
 	fi
 
 	say "New adoption code ($BIFROST_ADOPTION_CODE, was ${cur:-none}) — re-registering this spark."
-	$SUDO sh -c "sed -i 's|^adoption_code *=.*|adoption_code = \"$BIFROST_ADOPTION_CODE\"|' '$TOML'"
+	# Replace the line if it's there, APPEND it if it isn't. A plain `sed s///` is a
+	# no-op on a config that has no adoption_code line (an older install, or one
+	# written before the code was known) — it would report success and leave the spark
+	# with nothing to register with.
+	if $SUDO grep -q '^adoption_code' "$TOML" 2>/dev/null; then
+		$SUDO sh -c "sed -i 's|^adoption_code *=.*|adoption_code = \"$BIFROST_ADOPTION_CODE\"|' '$TOML'"
+	else
+		$SUDO sh -c "printf 'adoption_code = \"%s\"\n' '$BIFROST_ADOPTION_CODE' >> '$TOML'"
+	fi
 	# The old node key was revoked when the code was reissued; drop the adoption
 	# state so the spark registers again instead of retrying a dead credential.
 	$SUDO rm -f "$DIR/spark-state.json"
@@ -323,8 +343,8 @@ EOF
 
 if [ "$MODE" = docker ]; then
 	cat <<EOF
-  Logs:   cd $DIR && docker compose logs -f
-  Remove: cd $DIR && docker compose down
+  Logs:   sudo docker compose --project-directory $DIR -f $DIR/docker-compose.yml logs -f
+  Remove: sudo docker compose --project-directory $DIR -f $DIR/docker-compose.yml down
 EOF
 else
 	cat <<EOF
