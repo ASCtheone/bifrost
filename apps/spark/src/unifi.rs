@@ -1,5 +1,13 @@
-//! Minimal UniFi controller client (ported from the TS `unifi-connect`): cookie
-//! + CSRF auth, WireGuard-server discovery, and WireGuard-peer CRUD via the v2 API.
+//! Minimal UniFi controller client: WireGuard-server discovery and WireGuard-peer
+//! CRUD via the v2 API.
+//!
+//! Two ways to authenticate:
+//!
+//!   * **API key** (preferred) — an `X-API-KEY` header on every request. No session,
+//!     no CSRF token, nothing to re-auth. It's scoped and revocable on its own,
+//!     rather than being a human's admin password that also unlocks the console.
+//!   * **Username + password** — the classic cookie + CSRF login, kept as a fallback
+//!     for controllers old enough not to issue API keys.
 
 use crate::config::UnifiConfig;
 use anyhow::{anyhow, bail, Context, Result};
@@ -10,8 +18,9 @@ pub struct UnifiClient {
     http: reqwest::Client,
     base_url: String,
     site: String,
-    username: String,
-    password: String,
+    api_key: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
     csrf: Option<String>,
 }
 
@@ -53,10 +62,15 @@ impl UnifiClient {
             http,
             base_url,
             site: cfg.site.clone(),
-            username: cfg.username.clone(),
-            password: cfg.password.clone(),
+            api_key: cfg.api_key.clone().filter(|k| !k.is_empty()),
+            username: cfg.username.clone().filter(|u| !u.is_empty()),
+            password: cfg.password.clone().filter(|p| !p.is_empty()),
             csrf: None,
         })
+    }
+
+    fn uses_api_key(&self) -> bool {
+        self.api_key.is_some()
     }
 
     fn api_path(&self) -> String {
@@ -70,13 +84,20 @@ impl UnifiClient {
         )
     }
 
-    /// Authenticate; captures the session cookie (via the cookie store) and CSRF token.
+    /// Establish a session. A no-op with an API key — that auth is per-request, so
+    /// there is nothing to log in to and nothing to expire.
     pub async fn login(&mut self) -> Result<()> {
+        if self.uses_api_key() {
+            return Ok(());
+        }
+        let (Some(username), Some(password)) = (&self.username, &self.password) else {
+            bail!("no UniFi credentials: set an API key (or a username and password)");
+        };
         let url = format!("{}/api/auth/login", self.base_url);
         let resp = self
             .http
             .post(&url)
-            .json(&json!({ "username": self.username, "password": self.password }))
+            .json(&json!({ "username": username, "password": password }))
             .send()
             .await
             .context("connect to unifi controller")?;
@@ -96,11 +117,17 @@ impl UnifiClient {
         Ok(())
     }
 
-    /// Authenticated request; retries once through a fresh login on 401.
+    /// Authenticated request. With a username/password session, retries once through a
+    /// fresh login on 401 (the cookie can expire). With an API key there is nothing to
+    /// refresh — a 401 means the key is wrong or lacks permission, so say that plainly
+    /// instead of retrying in a loop that cannot succeed.
     async fn request(&mut self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
         for attempt in 0..2 {
             let url = format!("{}{}", self.base_url, path);
             let mut req = self.http.request(method.clone(), &url);
+            if let Some(key) = &self.api_key {
+                req = req.header("X-API-KEY", key);
+            }
             if let Some(csrf) = &self.csrf {
                 req = req.header("x-csrf-token", csrf);
             }
@@ -116,12 +143,22 @@ impl UnifiClient {
             {
                 self.csrf = Some(tok.to_string());
             }
-            if (resp.status() == 401 || resp.status() == 403) && attempt == 0 {
-                self.login().await?;
-                continue;
+            let status = resp.status();
+            if status == 401 || status == 403 {
+                if self.uses_api_key() {
+                    bail!(
+                        "unifi {method} {path} -> {status}: the API key was rejected. \
+                         Check it is valid and has permission to manage the network \
+                         (UniFi Console → Settings → Control Plane → Integrations → API Keys)."
+                    );
+                }
+                if attempt == 0 {
+                    self.login().await?;
+                    continue;
+                }
             }
-            if !resp.status().is_success() {
-                bail!("unifi {method} {path} -> {}", resp.status());
+            if !status.is_success() {
+                bail!("unifi {method} {path} -> {status}");
             }
             let text = resp.text().await.unwrap_or_default();
             return Ok(serde_json::from_str(&text).unwrap_or(Value::Null));

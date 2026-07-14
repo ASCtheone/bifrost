@@ -244,6 +244,7 @@ pub struct NodePatch {
     /// Already-encrypted blob (the route encrypts before it gets here, so a
     /// plaintext password can never reach the query builder by mistake).
     pub unifi_password_enc: Option<String>,
+    pub unifi_api_key_enc: Option<String>,
     pub unifi_insecure: Option<bool>,
 }
 
@@ -261,6 +262,7 @@ impl NodePatch {
             && self.unifi_site.is_none()
             && self.unifi_username.is_none()
             && self.unifi_password_enc.is_none()
+            && self.unifi_api_key_enc.is_none()
             && self.unifi_insecure.is_none()
     }
 }
@@ -301,6 +303,9 @@ pub async fn patch_node(pool: &SqlitePool, node_id: &str, p: NodePatch) -> AppRe
     }
     if let Some(v) = p.unifi_password_enc {
         qb.push(", unifi_password_enc = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_api_key_enc {
+        qb.push(", unifi_api_key_enc = ").push_bind(v);
     }
     if let Some(v) = p.unifi_insecure {
         qb.push(", unifi_insecure = ").push_bind(v);

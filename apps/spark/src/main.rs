@@ -94,8 +94,14 @@ async fn tick(
 ) -> Result<()> {
     let desired = control.desired_config(node_id, node_key).await?;
 
-    // Local config wins when present; otherwise take what the dashboard sends.
-    let wanted = cfg.unifi.clone().or_else(|| desired.unifi.clone());
+    // Local config wins when present; otherwise take what the dashboard sends. Either
+    // way it must actually carry a credential — a host with no API key and no login is
+    // not usable, and treating it as configured would just fail every request.
+    let wanted = cfg
+        .unifi
+        .clone()
+        .or_else(|| desired.unifi.clone())
+        .filter(|u| !u.host.is_empty() && u.has_credentials());
 
     let Some(wanted) = wanted else {
         // Not an error: the spark is adopted and healthy, just not told which

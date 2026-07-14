@@ -68,19 +68,30 @@ async fn desired_config(
     // that already proved it holds this node's key. `null` when the operator hasn't
     // filled it in yet (or the at-rest key was rotated, so the blob no longer
     // decrypts); the spark idles and says so rather than failing.
-    let unifi = match st
+    let api_key = st
         .cipher
-        .decrypt(node.unifi_password_enc.as_deref().unwrap_or(""))?
-    {
-        Some(pw) if !node.unifi_host.is_empty() && !node.unifi_username.is_empty() => json!({
+        .decrypt(node.unifi_api_key_enc.as_deref().unwrap_or(""))?;
+    let password = st
+        .cipher
+        .decrypt(node.unifi_password_enc.as_deref().unwrap_or(""))?;
+
+    // Either credential is enough. The API key is preferred — it is scoped, revocable
+    // on its own, and needs no session/CSRF — with username+password kept as a
+    // fallback for controllers too old to issue keys. Both are sent when both are set;
+    // the spark picks the key.
+    let has_login = !node.unifi_username.is_empty() && password.is_some();
+    let unifi = if !node.unifi_host.is_empty() && (api_key.is_some() || has_login) {
+        json!({
             "host": node.unifi_host,
             "port": node.unifi_port,
             "site": node.unifi_site,
-            "username": node.unifi_username,
-            "password": pw,
+            "apiKey": api_key,
+            "username": (!node.unifi_username.is_empty()).then_some(node.unifi_username.clone()),
+            "password": password,
             "insecure": node.unifi_insecure,
-        }),
-        _ => Value::Null,
+        })
+    } else {
+        Value::Null
     };
 
     Ok(Json(json!({

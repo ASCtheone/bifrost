@@ -41,6 +41,7 @@ interface NodeRow {
   readonly unifiUsername: string;
   /** The password itself is never sent to the browser — only whether one is set. */
   readonly hasUnifiPassword: boolean;
+  readonly hasUnifiApiKey: boolean;
   readonly unifiInsecure: boolean;
   readonly sparkVpnName: string | null;
   readonly sparkVpnId: string | null;
@@ -86,8 +87,9 @@ interface UnifiEdit {
   unifiPort: number;
   unifiSite: string;
   unifiUsername: string;
-  /** Blank means "leave the stored password alone" — see saveUnifi(). */
+  /** Blank means "leave the stored secret alone" — see saveUnifi(). */
   unifiPassword: string;
+  unifiApiKey: string;
   unifiInsecure: boolean;
 }
 
@@ -490,21 +492,18 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             <label>Site</label>
                             <input type="text" [(ngModel)]="unifiForm.unifiSite" name="unifiSite" placeholder="default" />
                           </div>
-                          <div class="field-sm">
-                            <label>Username</label>
-                            <input type="text" [(ngModel)]="unifiForm.unifiUsername" name="unifiUser" placeholder="bifrost" autocomplete="off" />
-                          </div>
                           <div class="field-sm full">
-                            <label>Password</label>
+                            <label>API key</label>
                             <input
                               type="password"
-                              [(ngModel)]="unifiForm.unifiPassword"
-                              name="unifiPass"
+                              [(ngModel)]="unifiForm.unifiApiKey"
+                              name="unifiApiKey"
                               autocomplete="new-password"
-                              [placeholder]="node.hasUnifiPassword ? 'Unchanged — type to replace' : 'Controller password'"
+                              [placeholder]="node.hasUnifiApiKey ? 'Unchanged — type to replace' : 'Paste the API key'"
                             />
                             <span class="field-hint">
-                              Stored encrypted and sent only to this spark. Leave blank to keep the current one.
+                              UniFi Console → Settings → Control Plane → Integrations → API Keys.
+                              Stored encrypted and sent only to this spark; leave blank to keep the current one.
                             </span>
                           </div>
                           <div class="field-sm full">
@@ -527,9 +526,10 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         </div>
                       </div>
                     } @else {
-                      @if (!node.unifiHost) {
+                      @if (!node.unifiHost || !node.hasUnifiApiKey) {
                         <div class="empty-state">
-                          No UniFi controller configured — this spark is idle until you set one.
+                          No UniFi controller configured — this spark is idle until you set a
+                          host and an API key.
                         </div>
                       }
                       <div class="info-row">
@@ -539,12 +539,8 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         </span>
                       </div>
                       <div class="info-row">
-                        <span class="info-label">Username</span>
-                        <span class="info-value mono">{{ node.unifiUsername || '—' }}</span>
-                      </div>
-                      <div class="info-row">
-                        <span class="info-label">Password</span>
-                        <span class="info-value">{{ node.hasUnifiPassword ? '•••••••••••• (encrypted)' : 'Not configured' }}</span>
+                        <span class="info-label">API key</span>
+                        <span class="info-value">{{ node.hasUnifiApiKey ? '•••••••••••• (encrypted)' : 'Not configured' }}</span>
                       </div>
                       <div class="info-row">
                         <span class="info-label">WireGuard endpoint</span>
@@ -917,6 +913,7 @@ export class NodesPage implements OnInit, OnDestroy {
     unifiSite: 'default',
     unifiUsername: '',
     unifiPassword: '',
+    unifiApiKey: '',
     unifiInsecure: true,
   };
 
@@ -1058,8 +1055,9 @@ export class NodesPage implements OnInit, OnDestroy {
       unifiPort: node.unifiPort || 443,
       unifiSite: node.unifiSite || 'default',
       unifiUsername: node.unifiUsername,
-      // Never prefilled — the server doesn't send it back. Blank = leave as-is.
+      // Never prefilled — the server doesn't send secrets back. Blank = leave as-is.
       unifiPassword: '',
+      unifiApiKey: '',
       unifiInsecure: node.unifiInsecure,
     };
     this.editingUnifiId.set(node.id);
@@ -1334,9 +1332,12 @@ export class NodesPage implements OnInit, OnDestroy {
         unifiUsername: f.unifiUsername,
         unifiInsecure: f.unifiInsecure,
       };
-      // Only send the password when the user actually typed one. Omitting it leaves
-      // the stored value alone — otherwise saving any other field (say, the port)
-      // would blank out the password.
+      // Only send a secret when the user actually typed one. Omitting it leaves the
+      // stored value alone — otherwise saving any other field (say, the port) would
+      // blank out the credential.
+      if (f.unifiApiKey) {
+        payload['unifiApiKey'] = f.unifiApiKey;
+      }
       if (f.unifiPassword) {
         payload['unifiPassword'] = f.unifiPassword;
       }

@@ -59,6 +59,10 @@ pub struct Node {
     /// the dashboard gets `hasUnifiPassword`, the spark gets the plaintext.
     #[serde(skip_serializing)]
     pub unifi_password_enc: Option<String>,
+    /// The preferred credential — same encryption, same rule: the dashboard only ever
+    /// learns whether one is set.
+    #[serde(skip_serializing)]
+    pub unifi_api_key_enc: Option<String>,
     pub unifi_insecure: bool,
     pub spark_vpn_name: Option<String>,
     pub spark_vpn_id: Option<String>,

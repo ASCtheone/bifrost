@@ -84,6 +84,7 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         "unifiSite": n.unifi_site,
         "unifiUsername": n.unifi_username,
         "hasUnifiPassword": n.unifi_password_enc.as_ref().map(|k| !k.is_empty()).unwrap_or(false),
+        "hasUnifiApiKey": n.unifi_api_key_enc.as_ref().map(|k| !k.is_empty()).unwrap_or(false),
         "unifiInsecure": n.unifi_insecure,
         "sparkVpnName": n.spark_vpn_name,
         "sparkVpnId": n.spark_vpn_id,
@@ -177,6 +178,7 @@ struct UpdateNodeReq {
     unifi_site: Option<String>,
     unifi_username: Option<String>,
     unifi_password: Option<String>,
+    unifi_api_key: Option<String>,
     unifi_insecure: Option<bool>,
 }
 
@@ -205,6 +207,11 @@ async fn update_node(
         Some("") => Some(String::new()),
         Some(pw) => Some(st.cipher.encrypt(pw)?),
     };
+    let unifi_api_key_enc = match req.unifi_api_key.as_deref() {
+        None => None,
+        Some("") => Some(String::new()),
+        Some(k) => Some(st.cipher.encrypt(k)?),
+    };
 
     let owner = req.assign_to_email.map(|opt| opt.unwrap_or_default()); // null → "" (unassign)
     let patch = node_repo::NodePatch {
@@ -220,6 +227,7 @@ async fn update_node(
         unifi_site: req.unifi_site,
         unifi_username: req.unifi_username,
         unifi_password_enc,
+        unifi_api_key_enc,
         unifi_insecure: req.unifi_insecure,
     };
     if patch.is_empty() {

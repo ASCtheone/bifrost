@@ -32,11 +32,32 @@ pub struct UnifiConfig {
     pub port: u16,
     #[serde(default = "default_site")]
     pub site: String,
-    pub username: String,
-    pub password: String,
+    /// UniFi API key (Console → Settings → Control Plane → Integrations → API Keys).
+    /// Preferred: it is scoped, revocable without changing a human's password, and
+    /// needs no session/CSRF handling.
+    ///
+    /// The alias matters: this struct is deserialized from the TOML (`api_key`) *and*
+    /// from the control plane's JSON (`apiKey`). Without it the server's key would
+    /// silently parse as None and the spark would fall back to a login it hasn't got.
+    #[serde(default, alias = "apiKey")]
+    pub api_key: Option<String>,
+    /// Local admin login. Only used when no api_key is set — kept as a fallback for
+    /// controllers too old to issue API keys.
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
     /// Accept the controller's self-signed TLS cert (typical for UniFi).
     #[serde(default = "default_true")]
     pub insecure: bool,
+}
+
+impl UnifiConfig {
+    pub fn has_credentials(&self) -> bool {
+        self.api_key.as_deref().is_some_and(|k| !k.is_empty())
+            || (self.username.as_deref().is_some_and(|u| !u.is_empty())
+                && self.password.as_deref().is_some_and(|p| !p.is_empty()))
+    }
 }
 
 fn default_poll() -> u64 {
