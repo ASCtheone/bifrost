@@ -143,9 +143,10 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
     out
 }
 
-/// Create a new device for an owner against their first eligible spark. Returns
-/// `None` if the owner has no adopted sparks. Used by device-code registration
-/// and first-login auto-provisioning.
+/// Create a new device for an owner. Binds against their first eligible spark if
+/// one exists; otherwise the device is created with an empty `node_id` and no
+/// server details — it activates automatically once a spark is adopted (configs
+/// are matched by owner, not by node_id). Used by device-code registration.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_device_for_owner(
     pool: &SqlitePool,
@@ -155,13 +156,11 @@ pub async fn create_device_for_owner(
     device_type: &str,
     provision_method: &str,
     expires_at: Option<String>,
-) -> AppResult<Option<Device>> {
+) -> AppResult<Device> {
     let all_nodes = node_repo::query_all_nodes(pool).await?;
     let owner_nodes = owned_nodes(pool, owner_email, &all_nodes).await?;
-    let Some(node) = owner_nodes.first() else {
-        return Ok(None);
-    };
-    let server = spark_server_for(node);
+    let node = owner_nodes.first();
+    let server = node.and_then(spark_server_for);
     let device_id = util::device_id();
     let kp = wg::generate_keypair();
     let now = util::now_iso();
@@ -169,7 +168,7 @@ pub async fn create_device_for_owner(
 
     let device = Device {
         device_id,
-        node_id: node.node_id.clone(),
+        node_id: node.map(|n| n.node_id.clone()).unwrap_or_default(),
         name: name.to_string(),
         device_type: device_type.to_string(),
         status: "pending".into(),
@@ -180,7 +179,7 @@ pub async fn create_device_for_owner(
         private_key: kp.private_key,
         preshared_key: wg::generate_preshared_key(),
         server_public_key: server.as_ref().map(|s| s.public_key.clone()).unwrap_or_default(),
-        server_endpoint: node.controller_url.clone(),
+        server_endpoint: node.map(|n| n.controller_url.clone()).unwrap_or_default(),
         server_port: server.as_ref().map(|s| s.server_port).unwrap_or(51830),
         dns: SqlxJson(vec!["1.1.1.1".into(), "8.8.8.8".into()]),
         allowed_ips: SqlxJson(vec!["0.0.0.0/0".into()]),
@@ -194,5 +193,5 @@ pub async fn create_device_for_owner(
         expires_at,
     };
     device_repo::put_device(pool, &device).await?;
-    Ok(Some(device))
+    Ok(device)
 }

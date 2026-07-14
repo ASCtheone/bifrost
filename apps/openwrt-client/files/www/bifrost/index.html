@@ -86,6 +86,11 @@
 
     <!-- Registered: settings -->
     <div id="settings" class="hidden">
+      <div id="noSpark" class="hidden" style="background:rgba(231,150,19,.12);border:1px solid rgba(231,150,19,.35);border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13px;color:var(--muted);">
+        <b style="color:var(--warning)">No spark available yet.</b>
+        This router is linked to your account, but there's no spark to connect to.
+        Install a spark — it'll connect automatically once one is adopted.
+      </div>
       <label for="location">Location</label>
       <select id="location"></select>
 
@@ -154,6 +159,8 @@
       }
     } else {
       stopPolling();
+      var nodes = data.nodes || [];
+      show('noSpark', nodes.length === 0);
       buildLocations(data);
       $('killswitch').checked = !!data.killswitch;
       $('routeLan').checked = !!data.routeLan;

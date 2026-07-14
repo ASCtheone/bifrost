@@ -185,13 +185,14 @@ async fn register(
         "device-code",
         expires_at.clone(),
     )
-    .await?
-    .ok_or_else(|| {
-        AppError::BadRequest("Your account has no sparks yet — create a spark first".into())
-    })?;
+    .await?;
 
     let token = device.provision_token.clone().unwrap_or_default();
     device_code_repo::mark_registered(&st.pool, &code, &device.device_id, &token, &owner).await?;
+
+    // An empty node_id means no spark was available to bind to yet — the device
+    // is registered but won't tunnel until a spark is adopted.
+    let needs_spark = device.node_id.is_empty();
 
     Ok(Json(json!({
         "deviceId": device.device_id,
@@ -199,6 +200,7 @@ async fn register(
         "provisionToken": token,
         "callbackUrl": dc.callback_url,
         "expiresAt": expires_at,
+        "needsSpark": needs_spark,
     })))
 }
 

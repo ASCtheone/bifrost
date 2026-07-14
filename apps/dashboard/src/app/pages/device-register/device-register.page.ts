@@ -27,6 +27,13 @@ import { ApiService } from '../../services/api.service';
           <div class="done">
             <div class="ok-icon">✓</div>
             <p class="done-title">{{ deviceName() }} is registered</p>
+            @if (needsSpark()) {
+              <div class="warn-box">
+                <strong>No spark installed yet.</strong>
+                This device is linked to your account, but it can't tunnel until you
+                install a spark. It will connect automatically once a spark is adopted.
+              </div>
+            }
             @if (callback()) {
               <p class="done-sub">Returning to your router to finish connecting…</p>
             } @else {
@@ -92,6 +99,8 @@ import { ApiService } from '../../services/api.service';
     .done-title { font-size: 0.95rem; color: var(--text-primary); font-weight: 600; margin: 0 0 0.35rem; }
     .done-sub { font-size: 0.8rem; color: var(--text-tertiary); margin: 0 0 0.75rem; }
     .token-box { font-family: var(--font-num, monospace); font-size: 0.85rem; word-break: break-all; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.75rem; color: var(--text-primary); }
+    .warn-box { text-align: left; font-size: 0.8rem; line-height: 1.45; color: var(--text-secondary); background: color-mix(in srgb, var(--warning, #f59e0b) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 35%, var(--border)); border-radius: 10px; padding: 0.7rem 0.85rem; margin: 0 0 1rem; }
+    .warn-box strong { color: var(--warning, #f59e0b); display: block; margin-bottom: 0.2rem; }
   `],
 })
 export class DeviceRegisterPage implements OnInit {
@@ -109,6 +118,7 @@ export class DeviceRegisterPage implements OnInit {
   token = signal('');
   deviceName = signal('');
   callback = signal('');
+  needsSpark = signal(false);
 
   ngOnInit(): void {
     const qp = this.route.snapshot.queryParamMap;
@@ -151,7 +161,8 @@ export class DeviceRegisterPage implements OnInit {
     this.loading.set(true);
     try {
       const res = await this.api.post<{
-        provisionToken: string; name: string; deviceId: string; callbackUrl: string | null;
+        provisionToken: string; name: string; deviceId: string;
+        callbackUrl: string | null; needsSpark?: boolean;
       }>('/device/register', {
         deviceCode: this.code.trim(),
         name: this.name.trim() || undefined,
@@ -159,6 +170,7 @@ export class DeviceRegisterPage implements OnInit {
       });
       this.token.set(res.provisionToken);
       this.deviceName.set(res.name);
+      this.needsSpark.set(!!res.needsSpark);
 
       // Hand the token back to the device via the callback it registered with —
       // server-validated as private/LAN, and re-checked here. Otherwise the user
