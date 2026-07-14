@@ -9,27 +9,21 @@ START=95
 STOP=10
 
 start_service() {
-	local alias
-
-	# Config page — always available so the router can be set up from a browser.
+	# Config page — one server, on :8099, on every address.
+	#
+	# It is deliberately NOT also bound to <alias>:80 to serve http://bifrost.lan/.
+	# GL.iNet's own uhttpd binds the *wildcard* 0.0.0.0:80, which occupies port 80
+	# on every address the router has — including our alias. Linux rejects an
+	# overlapping bind while the existing socket is LISTENing (SO_REUSEADDR does
+	# not help), so a second uhttpd on <alias>:80 fails with EADDRINUSE, respawns,
+	# and GL.iNet's wildcard socket answers the alias instead — you'd land on their
+	# dashboard. Port 80 is handled with a NAT redirect to :8099 instead, which the
+	# kernel applies in PREROUTING, before the wildcard socket ever sees the packet.
+	# See `bifrost ui-setup`.
 	procd_open_instance webui
 	procd_set_param command /usr/sbin/uhttpd -f -p 0.0.0.0:8099 -h /www/bifrost -x /cgi-bin -t 60 -T 30
 	procd_set_param respawn
 	procd_close_instance
-
-	# Same page on :80 under a LAN name (http://bifrost.lan/). It binds the LAN
-	# bridge's *alias* address, not 0.0.0.0 — GL.iNet's own uhttpd owns :80 on the
-	# router's main address, and two sockets can't share it. `bifrost ui-setup`
-	# (run from postinst) creates the alias and the dnsmasq record; if it declined
-	# to — e.g. the LAN isn't a /24 — ui_alias_ip is empty and we simply don't
-	# start this instance, leaving :8099 as the only way in.
-	alias=$(uci -q get bifrost.settings.ui_alias_ip)
-	if [ -n "$alias" ]; then
-		procd_open_instance webui80
-		procd_set_param command /usr/sbin/uhttpd -f -p "$alias:80" -h /www/bifrost -x /cgi-bin -t 60 -T 30
-		procd_set_param respawn
-		procd_close_instance
-	fi
 
 	# VPN agent — always running; it reacts to the uci config (pairing, enabled,
 	# location, kill switch) each cycle, so the web UI never has to restart procd.

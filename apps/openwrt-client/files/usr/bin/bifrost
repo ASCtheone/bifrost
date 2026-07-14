@@ -24,7 +24,7 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.3.0
+BIFROST_VERSION=0.3.1
 
 mkdir -p "$STATE_DIR"
 
@@ -348,10 +348,24 @@ cmd_down() { cfg_set enabled 0; }
 
 # ── config page on :80 under a LAN name (bifrost.lan) ───────────
 #
-# GL.iNet's own uhttpd owns :80 on the router's address, and uhttpd has no
-# name-based virtual hosting — so we can't share that port. Instead we give the
-# LAN bridge a second IP and let our uhttpd own :80 *there*. dnsmasq (already the
-# resolver for every DHCP client) maps the name to it. GL.iNet's UI is untouched.
+# Three pieces:
+#   1. a second IP on the LAN bridge (the "alias"), so the name has somewhere of
+#      its own to point that isn't the router's address;
+#   2. a dnsmasq record mapping bifrost.lan → that alias. dnsmasq is already the
+#      resolver for every DHCP client, so this needs no new daemon;
+#   3. a NAT redirect: alias:80 → alias:8099, where our uhttpd already listens.
+#
+# (3) is the subtle one. The obvious approach — a second uhttpd bound to
+# <alias>:80 — CANNOT work: GL.iNet's uhttpd binds the wildcard 0.0.0.0:80, which
+# occupies port 80 on every address the router owns, alias included. Linux refuses
+# an overlapping bind while the existing socket is LISTENing (SO_REUSEADDR does not
+# lift that), so the second uhttpd dies with EADDRINUSE and GL.iNet's wildcard
+# socket serves the alias — you get their dashboard, not this page.
+#
+# A DNAT rule sidesteps it: NAT runs in PREROUTING, before the kernel picks a local
+# socket, so the packet is already headed for :8099 by the time the wildcard socket
+# could have claimed it. GL.iNet's uhttpd is never touched — the rule matches only
+# the alias address, so the router's own :80 keeps serving their UI as before.
 #
 # `.lan`, not `.local`: .local is reserved for mDNS (RFC 6762), and macOS/iOS/
 # Windows resolve it only over multicast — a dnsmasq record for it would silently
@@ -421,8 +435,22 @@ cmd_ui_setup() {
 	zone=$(ui_lan_zone) && {
 		uci -q del_list "firewall.@zone[$zone].network=bifrost_ui"
 		uci add_list "firewall.@zone[$zone].network=bifrost_ui"
-		uci commit firewall
 	}
+
+	# alias:80 → alias:8099, so the page answers on port 80 without a second
+	# listener fighting GL.iNet's uhttpd for the port (see the note above).
+	# src_dip pins this to the alias: traffic to the router's own :80 is not
+	# matched, so the GL.iNet UI is unaffected.
+	uci set firewall.bifrost_ui80=redirect
+	uci set firewall.bifrost_ui80.name='Bifrost-UI-80'
+	uci set firewall.bifrost_ui80.target='DNAT'
+	uci set firewall.bifrost_ui80.src='lan'
+	uci set firewall.bifrost_ui80.proto='tcp'
+	uci set firewall.bifrost_ui80.src_dip="$alias"
+	uci set firewall.bifrost_ui80.src_dport='80'
+	uci set firewall.bifrost_ui80.dest_ip="$alias"
+	uci set firewall.bifrost_ui80.dest_port='8099'
+	uci commit firewall
 
 	uci -q del_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
 	uci add_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
@@ -446,14 +474,33 @@ cmd_ui_teardown() {
 		uci -q del_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
 		uci commit dhcp
 	}
-	zone=$(ui_lan_zone) && {
-		uci -q del_list "firewall.@zone[$zone].network=bifrost_ui"
-		uci commit firewall
-	}
+	zone=$(ui_lan_zone) && uci -q del_list "firewall.@zone[$zone].network=bifrost_ui"
+	uci -q delete firewall.bifrost_ui80
+	uci commit firewall
 	uci -q delete network.bifrost_ui && uci commit network
 	/etc/init.d/network reload >/dev/null 2>&1
 	/etc/init.d/dnsmasq reload >/dev/null 2>&1
 	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+# Print what the port-80 path actually looks like right now. Each line is one of
+# the things that has to be true for http://bifrost.lan/ to work, so a broken
+# setup says which piece is missing instead of just failing in a browser.
+cmd_ui_check() {
+	local alias domain
+	alias=$(cfg_get ui_alias_ip)
+	domain=$(cfg_get ui_domain)
+	echo "alias ip:  ${alias:-<none — page is on :8099 only>}"
+	echo "domain:    ${domain:-<none>}"
+	echo "on $(lan_dev):  $(ip -4 -o addr show "$(lan_dev)" 2>/dev/null | awk '{printf "%s ", $4}')"
+	echo "dns:       $(nslookup "$domain" 127.0.0.1 2>/dev/null | awk '/^Address/ {a=$NF} END {print (a ? a : "does not resolve")}')"
+	if uci -q get firewall.bifrost_ui80.src_dip >/dev/null 2>&1; then
+		echo "redirect:  $(uci -q get firewall.bifrost_ui80.src_dip):80 -> $(uci -q get firewall.bifrost_ui80.dest_port)"
+	else
+		echo "redirect:  MISSING — run 'bifrost ui-setup'"
+	fi
+	echo "listening: $(netstat -ltn 2>/dev/null | awk '$4 ~ /:8099$/ {printf "%s ", $4}')"
+	echo "url:       $(ui_url)"
 }
 
 # Where the config page lives — the pretty name if the alias came up, else :8099.
@@ -482,6 +529,7 @@ case "${1:-}" in
 	json) cmd_json ;;
 	ui-setup) cmd_ui_setup ;;
 	ui-teardown) cmd_ui_teardown ;;
+	ui-check) cmd_ui_check ;;
 	ui-url) ui_url ;;
 	run)
 		# Reactive daemon: always running, re-reads uci each 5s tick and acts on

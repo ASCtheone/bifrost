@@ -67,8 +67,9 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
 | `bifrost json`          | machine-readable status (used by the config page)          |
 | `bifrost refresh`       | re-fetch config from the master, reconnect if it changed   |
 | `bifrost killswitch`    | (re)apply the kill switch from config                      |
-| `bifrost ui-setup`      | create the `:80` alias + `bifrost.lan` DNS record (postinst) |
+| `bifrost ui-setup`      | create the alias, `bifrost.lan` record, `:80` redirect (postinst) |
 | `bifrost ui-teardown`   | remove them again (prerm)                                  |
+| `bifrost ui-check`      | show why `http://bifrost.lan/` is (not) working            |
 | `bifrost ui-url`        | print where the config page is reachable                   |
 
 ## The config page on port 80 (`http://bifrost.lan/`)
@@ -76,12 +77,20 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
 The page always listens on **`:8099`**. On install it *also* becomes available at
 **`http://bifrost.lan/`** — no port — and here's how, because it's not obvious:
 
-GL.iNet's own uhttpd owns `:80` on the router's address, and uhttpd has no
-name-based virtual hosting, so that port can't be shared. Instead `bifrost
-ui-setup` gives the LAN bridge a **second IP** and binds a second uhttpd to
-`<alias>:80`. GL.iNet's UI is left completely untouched on the router's own
-address. dnsmasq — already the DNS server for every DHCP client — maps the name
-to the alias.
+`bifrost ui-setup` does three things: gives the LAN bridge a **second IP** (the
+alias), points `bifrost.lan` at it via dnsmasq (already the DNS server for every
+DHCP client), and adds a **NAT redirect** `alias:80 → alias:8099`.
+
+The redirect is the non-obvious part, and the reason a second uhttpd on
+`<alias>:80` **cannot** work: GL.iNet's uhttpd binds the *wildcard* `0.0.0.0:80`,
+which occupies port 80 on every address the router has — the alias included.
+Linux refuses an overlapping bind while the existing socket is `LISTEN`ing
+(`SO_REUSEADDR` does not lift that), so a second uhttpd dies with `EADDRINUSE`,
+respawns, and GL.iNet's wildcard socket answers the alias — you land on *their*
+dashboard. NAT runs in `PREROUTING`, before the kernel picks a local socket, so
+the packet is already headed for `:8099` before that wildcard socket can claim
+it. The rule matches only the alias address, so the router's own `:80` keeps
+serving the GL.iNet UI exactly as before.
 
 The alias is **chosen at install**, not hardcoded: it takes the first free host
 address in the LAN `/24`, skipping the router's own address and the entire DHCP
