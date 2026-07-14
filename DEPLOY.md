@@ -7,6 +7,25 @@ Two things get deployed:
 | **Control plane** (dashboard + API + opkg feed) | your VPS | `apps/spark-server/Dockerfile` |
 | **Spark** (on-site UniFi bridge) | inside each customer network | `apps/spark/Dockerfile` |
 
+## Installing a spark (one line)
+
+On the machine inside the network you want to bridge:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ASCtheone/bifrost/master/scripts/install-spark.sh | sh
+```
+
+It asks, once, how to install:
+
+- **docker** — a container via docker compose. Installs Docker for you if it's missing.
+- **native** — a static binary (`/usr/local/bin/bifrost-spark`) plus a systemd
+  service. No Docker at all. The binaries are published per release and the
+  download is checksum-verified against `SHA256SUMS` before install.
+
+The answer is recorded in `/opt/bifrost-spark/install.conf`, so **re-running the
+same one-liner updates in place** — it never re-asks the mode or your UniFi
+credentials. The dashboard shows this command on its home page, ready to copy.
+
 ## 1. Control plane on the VPS
 
 Prerequisites: Docker + Docker Compose. Ingress is a **Cloudflare Tunnel** by

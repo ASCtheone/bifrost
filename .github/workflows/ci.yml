@@ -92,22 +92,12 @@ jobs:
             ghcr.io/asctheone/bifrost-spark:${{ steps.ver.outputs.v }}
             ghcr.io/asctheone/bifrost-spark:${{ github.sha }}
 
-  # Build the GL.iNet/OpenWrt package and publish it as an opkg feed on GitHub
-  # Releases, so a router can install straight from this repo:
-  #
-  #   src/gz bifrost https://github.com/ASCtheone/bifrost/releases/latest/download
-  #
-  # opkg fetches <feed>/Packages.gz, and GitHub's `releases/latest/download/<asset>`
-  # redirects to the newest release — so the router's feed URL never changes across
-  # versions. The release is tagged from VERSION; re-running on the same version
-  # replaces the assets rather than erroring.
-  #
-  # PRs build the package (to catch a broken ipk) but never publish.
+  # Build the GL.iNet/OpenWrt package as an opkg feed (ipk + Packages index). The
+  # `release` job below publishes it; this one only builds, so PRs still catch a
+  # broken ipk without publishing anything.
   openwrt:
-    name: Build & publish GL.iNet package (opkg feed)
+    name: Build GL.iNet package (opkg feed)
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # create releases + upload assets
     steps:
       - uses: actions/checkout@v4
 
@@ -143,28 +133,113 @@ jobs:
           name: bifrost-openwrt-ipk
           path: dist/
 
-      - name: Publish feed to GitHub Releases
-        if: ${{ github.event_name == 'push' }}
+  # Static spark binaries, so `install-spark.sh` can install the spark as a plain
+  # systemd service on a host with no Docker. reqwest is on rustls (no OpenSSL), so
+  # a musl build links fully static and runs on any glibc/musl distro.
+  spark-binaries:
+    name: Build spark binary (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/spark
+      # `cross` runs the build in a container with the right musl toolchain, so
+      # aarch64 doesn't need a hand-assembled cross-linker on the runner.
+      - name: Install cross
+        run: cargo install cross --locked
+      - name: Build
+        working-directory: apps/spark
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage + smoke-check
+        working-directory: apps/spark
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/bifrost-spark"
+          file "$bin"
+          # A dynamically-linked binary here would fail on the user's host with a
+          # confusing loader error, so make static a hard requirement.
+          file "$bin" | grep -q "statically linked" || { echo "::error::$bin is not static"; exit 1; }
+          mkdir -p ../../dist
+          install -m 0755 "$bin" "../../dist/bifrost-spark-${{ matrix.arch }}-linux"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bifrost-spark-${{ matrix.arch }}
+          path: dist/
+
+  # One publisher for every release asset. Both build jobs feed it, so the ipk feed
+  # and the spark binaries land in the same release instead of racing to create it.
+  release:
+    name: Publish release (opkg feed + spark binaries)
+    runs-on: ubuntu-latest
+    needs: [openwrt, spark-binaries]
+    if: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: write # create releases + upload assets
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read unified version
+        id: ver
+        run: echo "v=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+      - name: Collect assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staged -type f -exec cp {} dist/ \;
+          # install-spark.sh verifies downloads against this before installing.
+          ( cd dist && sha256sum bifrost-spark-* > SHA256SUMS )
+          ls -l dist
+
+      - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           V: ${{ steps.ver.outputs.v }}
         run: |
           set -euo pipefail
-          assets=("dist/bifrost_${V}_all.ipk" dist/Packages dist/Packages.gz)
+          assets=(
+            "dist/bifrost_${V}_all.ipk" dist/Packages dist/Packages.gz
+            dist/bifrost-spark-x86_64-linux dist/bifrost-spark-aarch64-linux dist/SHA256SUMS
+          )
+          for a in "${assets[@]}"; do
+            test -f "$a" || { echo "::error::missing release asset $a"; exit 1; }
+          done
 
           # Heredoc (not an inline --notes string): keeps the body free of the
           # YAML block's indentation, which Markdown would render as code.
           cat > notes.md <<EOF
-          opkg feed for GL.iNet/OpenWrt routers.
+          ## Spark
 
-          On the router:
+          Install or update a spark (asks Docker or systemd on first run; remembers
+          the choice, so re-running just updates):
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-spark.sh | sh
+          \`\`\`
+
+          ## GL.iNet / OpenWrt router
 
           \`\`\`sh
           echo 'src/gz bifrost https://github.com/${{ github.repository }}/releases/latest/download' >> /etc/opkg/customfeeds.conf
           opkg update && opkg install bifrost
           \`\`\`
 
-          The config page then lives at \`http://<router-ip>:8099/\`.
+          The router's config page then lives at \`http://bifrost.lan/\`.
           EOF
           sed -i 's/^          //' notes.md
 

@@ -1,32 +1,45 @@
 #!/bin/sh
-# install-spark.sh — set up a Bifrost spark on this host.
+# install-spark.sh — install *or update* a Bifrost spark on this host.
 #
-# The spark bridges an on-site UniFi network to your Bifrost control plane. This
-# script creates /opt/bifrost-spark, drops a docker-compose using the published
-# image, writes the config, and starts it. The spark then registers and waits —
-# you confirm the connection in the dashboard (Sparks → Adopt) to bind it to
-# your account.
+# The spark bridges an on-site UniFi network to your Bifrost control plane.
 #
-# Run interactively:
-#   curl -fsSL https://raw.githubusercontent.com/ASCtheone/bifrost/main/scripts/install-spark.sh | sh
-# or non-interactively with env vars:
-#   BIFROST_ADOPTION_CODE=XXX-XXX-XXX UNIFI_HOST=192.168.1.1 UNIFI_USER=bifrost \
-#   UNIFI_PASS=secret sh install-spark.sh
+#   curl -fsSL https://raw.githubusercontent.com/ASCtheone/bifrost/master/scripts/install-spark.sh | sh
+#
+# On first run it asks how you want it installed:
+#
+#   docker  — a container via docker compose. Offers to install Docker if missing.
+#   native  — a static binary + a systemd service. No Docker at all.
+#
+# Re-run the same command any time to UPDATE. The choice is recorded in
+# <dir>/install.conf, so an update never re-asks how to install or what your UniFi
+# credentials are — it just pulls the new version and restarts.
+#
+# Non-interactive (CI, provisioning):
+#   BIFROST_MODE=docker BIFROST_ADOPTION_CODE=XXX-XXX-XXX UNIFI_HOST=192.168.1.1 \
+#   UNIFI_USER=bifrost UNIFI_PASS=secret sh install-spark.sh
+#
+# Env overrides: BIFROST_SPARK_DIR, BIFROST_SPARK_IMAGE, BIFROST_MASTER, BIFROST_REPO
 set -eu
 
 DIR="${BIFROST_SPARK_DIR:-/opt/bifrost-spark}"
 IMAGE="${BIFROST_SPARK_IMAGE:-ghcr.io/asctheone/bifrost-spark:latest}"
 MASTER="${BIFROST_MASTER:-https://dash.asc.ninja/bifrost/api}"
+REPO="${BIFROST_REPO:-ASCtheone/bifrost}"
+DL="https://github.com/$REPO/releases/latest/download"
 
-say() { printf '%s\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+CONF="$DIR/install.conf"        # records the mode, so updates don't re-ask
+TOML="$DIR/bifrost-spark.toml"  # the spark's own config (+ its state file, alongside)
+BIN=/usr/local/bin/bifrost-spark
+UNIT=/etc/systemd/system/bifrost-spark.service
 
-command -v docker >/dev/null 2>&1 || die "docker is required"
-docker compose version >/dev/null 2>&1 || die "docker compose (v2) is required"
+say()  { printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# ask VAR "prompt" [default] — reads from the terminal even under curl | sh.
+# Read from the terminal even when the script arrives via `curl | sh` (in which
+# case stdin is the script, not the user). Skips if the var is already set.
 ask() {
-	var=$1; prompt=$2; def=${3:-}
+	var=$1 prompt=$2 def=${3:-}
 	eval "cur=\${$var:-}"
 	[ -n "${cur:-}" ] && return 0
 	if [ -r /dev/tty ]; then
@@ -35,26 +48,82 @@ ask() {
 		[ -z "$ans" ] && ans=$def
 		eval "$var=\$ans"
 	else
+		[ -n "$def" ] || die "$prompt is required (no terminal; set it via env)"
 		eval "$var=\$def"
 	fi
 }
 
-say "Installing a Bifrost spark into $DIR"
-say "Get an adoption code from the dashboard: Sparks → Add Spark."
-ask BIFROST_ADOPTION_CODE "Adoption code"
-ask UNIFI_HOST  "UniFi controller IP/host" "192.168.1.1"
-ask UNIFI_PORT  "UniFi port" "443"
-ask UNIFI_SITE  "UniFi site" "default"
-ask UNIFI_USER  "UniFi username"
-ask UNIFI_PASS  "UniFi password"
+need_root() {
+	[ "$(id -u)" = 0 ] && return 0
+	command -v sudo >/dev/null 2>&1 || die "run as root (or install sudo)"
+	SUDO=sudo
+}
+SUDO=""
 
-[ -n "${BIFROST_ADOPTION_CODE:-}" ] || die "an adoption code is required"
-[ -n "${UNIFI_USER:-}" ] || die "a UniFi username is required"
+have_docker() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
 
-mkdir -p "$DIR"
+fetch() { # fetch <url> <dest>
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL "$1" -o "$2"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -qO "$2" "$1"
+	else
+		die "need curl or wget"
+	fi
+}
 
-umask 077
-cat >"$DIR/bifrost-spark.toml" <<EOF
+# ── mode ────────────────────────────────────────────────────────
+
+# An existing install decides its own mode. This is what makes re-running the
+# one-liner an update rather than a re-interrogation.
+load_mode() {
+	[ -f "$CONF" ] || return 1
+	# shellcheck disable=SC1090
+	. "$CONF"
+	[ -n "${MODE:-}" ]
+}
+
+choose_mode() {
+	[ -n "${BIFROST_MODE:-}" ] && { MODE=$BIFROST_MODE; return 0; }
+	if have_docker; then
+		say "Docker is installed on this host."
+		docker_hint="docker (detected)"
+	else
+		say "Docker is not installed."
+		docker_hint="docker (will be installed)"
+	fi
+	say ""
+	say "How should the spark run?"
+	say "  1) $docker_hint — container, managed by docker compose"
+	say "  2) native            — static binary + systemd service, no Docker"
+	say ""
+	ask PICK "Choose 1 or 2" "1"
+	case "$PICK" in
+		1 | docker) MODE=docker ;;
+		2 | native) MODE=native ;;
+		*) die "invalid choice: $PICK" ;;
+	esac
+}
+
+# ── config (first install only) ─────────────────────────────────
+
+write_config() {
+	say ""
+	say "Get an adoption code from the dashboard: Sparks → Add Spark."
+	ask BIFROST_ADOPTION_CODE "Adoption code"
+	ask UNIFI_HOST "UniFi controller IP/host" "192.168.1.1"
+	ask UNIFI_PORT "UniFi port" "443"
+	ask UNIFI_SITE "UniFi site" "default"
+	ask UNIFI_USER "UniFi username"
+	ask UNIFI_PASS "UniFi password"
+
+	[ -n "${BIFROST_ADOPTION_CODE:-}" ] || die "an adoption code is required"
+	[ -n "${UNIFI_USER:-}" ] || die "a UniFi username is required"
+
+	$SUDO mkdir -p "$DIR"
+	# The file holds UniFi credentials — never world-readable.
+	umask 077
+	$SUDO sh -c "cat > '$TOML'" <<EOF
 # Bifrost spark config — generated by install-spark.sh
 master_url = "$MASTER"
 adoption_code = "$BIFROST_ADOPTION_CODE"
@@ -68,9 +137,29 @@ username = "$UNIFI_USER"
 password = "$UNIFI_PASS"
 insecure = true
 EOF
-umask 022
+	$SUDO chmod 0600 "$TOML"
+	umask 022
+}
 
-cat >"$DIR/docker-compose.yml" <<EOF
+save_mode() {
+	$SUDO mkdir -p "$DIR"
+	$SUDO sh -c "printf 'MODE=%s\n' '$MODE' > '$CONF'"
+}
+
+# ── docker ──────────────────────────────────────────────────────
+
+install_docker() {
+	have_docker && return 0
+	say "Installing Docker…"
+	command -v curl >/dev/null 2>&1 || die "need curl to install Docker"
+	curl -fsSL https://get.docker.com | $SUDO sh || die "Docker install failed"
+	$SUDO systemctl enable --now docker 2>/dev/null || true
+	have_docker || die "Docker installed but 'docker compose' is unavailable"
+}
+
+setup_docker() {
+	install_docker
+	$SUDO sh -c "cat > '$DIR/docker-compose.yml'" <<EOF
 services:
   bifrost-spark:
     image: $IMAGE
@@ -78,19 +167,106 @@ services:
       - ./:/etc/bifrost      # bifrost-spark.toml + persisted spark-state.json
     restart: unless-stopped
 EOF
+	( cd "$DIR" && $SUDO docker compose pull && $SUDO docker compose up -d )
+}
 
-say "Starting the spark…"
-( cd "$DIR" && docker compose pull && docker compose up -d )
+# ── native (static binary + systemd) ────────────────────────────
+
+setup_native() {
+	command -v systemctl >/dev/null 2>&1 || die "native mode needs systemd (use docker mode instead)"
+
+	arch=$(uname -m)
+	case "$arch" in
+		x86_64 | amd64) asset=bifrost-spark-x86_64-linux ;;
+		aarch64 | arm64) asset=bifrost-spark-aarch64-linux ;;
+		*) die "no prebuilt spark binary for $arch (use docker mode)" ;;
+	esac
+
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT
+	say "Downloading $asset…"
+	fetch "$DL/$asset" "$tmp/$asset" || die "download failed"
+
+	# Verify against the release checksums — this binary runs as root, so a
+	# corrupted or tampered download must not be installed silently.
+	if fetch "$DL/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null && command -v sha256sum >/dev/null 2>&1; then
+		want=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$tmp/SHA256SUMS" | head -n1)
+		got=$(sha256sum "$tmp/$asset" | awk '{print $1}')
+		[ -n "$want" ] || die "no checksum for $asset in SHA256SUMS"
+		[ "$want" = "$got" ] || die "checksum mismatch for $asset (expected $want, got $got)"
+		say "Checksum OK."
+	else
+		warn "could not verify the download checksum"
+	fi
+
+	$SUDO install -m 0755 "$tmp/$asset" "$BIN"
+
+	$SUDO sh -c "cat > '$UNIT'" <<EOF
+[Unit]
+Description=Bifrost spark (on-site UniFi bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=BIFROST_SPARK_CONFIG=$TOML
+ExecStart=$BIN
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	$SUDO systemctl daemon-reload
+	$SUDO systemctl enable --now bifrost-spark
+	$SUDO systemctl restart bifrost-spark
+}
+
+# ── main ────────────────────────────────────────────────────────
+
+need_root
+
+if load_mode; then
+	UPDATING=1
+	say "Existing spark install found in $DIR (mode: $MODE) — updating."
+else
+	UPDATING=0
+	choose_mode
+fi
+
+[ "$UPDATING" = 0 ] && write_config
+save_mode
+
+case "$MODE" in
+	docker) setup_docker ;;
+	native) setup_native ;;
+	*) die "unknown mode '$MODE' in $CONF" ;;
+esac
+
+if [ "$UPDATING" = 1 ]; then
+	say ""
+	say "Spark updated ($MODE)."
+	exit 0
+fi
 
 cat <<EOF
 
-Spark installed and started in $DIR.
+Spark installed and started in $DIR (mode: $MODE).
 
   Next: open your Bifrost dashboard → Sparks. The new spark appears as
-  "available" — click Adopt to confirm the connection and bind it to your
-  account. It will then manage the UniFi WireGuard server automatically.
+  "available" — click Adopt to bind it to your account. It will then manage the
+  UniFi WireGuard server automatically.
 
+  Update: re-run this same one-liner. It won't ask anything again.
+EOF
+
+if [ "$MODE" = docker ]; then
+	cat <<EOF
   Logs:   cd $DIR && docker compose logs -f
-  Update: cd $DIR && docker compose pull && docker compose up -d
   Remove: cd $DIR && docker compose down
 EOF
+else
+	cat <<EOF
+  Logs:   journalctl -u bifrost-spark -f
+  Remove: systemctl disable --now bifrost-spark && rm -f $UNIT $BIN
+EOF
+fi
