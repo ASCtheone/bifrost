@@ -249,9 +249,14 @@ EOF
 adopt_new_code() {
 	cur=$(sed -n 's/^adoption_code *= *"\(.*\)"/\1/p' "$TOML" 2>/dev/null | head -n1)
 	[ -n "${BIFROST_ADOPTION_CODE:-}" ] || return 0
-	[ "$BIFROST_ADOPTION_CODE" != "$cur" ] || return 0
+	if [ "$BIFROST_ADOPTION_CODE" = "$cur" ]; then
+		# Say so explicitly. Silence here is indistinguishable from a script that
+		# ignored the code outright, which is precisely the bug this function fixes.
+		say "Adoption code unchanged — keeping the current registration."
+		return 0
+	fi
 
-	say "New adoption code supplied — re-registering this spark."
+	say "New adoption code ($BIFROST_ADOPTION_CODE, was ${cur:-none}) — re-registering this spark."
 	$SUDO sh -c "sed -i 's|^adoption_code *=.*|adoption_code = \"$BIFROST_ADOPTION_CODE\"|' '$TOML'"
 	# The old node key was revoked when the code was reissued; drop the adoption
 	# state so the spark registers again instead of retrying a dead credential.
