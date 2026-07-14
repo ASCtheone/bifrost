@@ -53,15 +53,10 @@ This is an Nx monorepo. The pieces that matter:
 | --- | --- | --- |
 | **Control plane** | `apps/spark-server` | The self-hosted master — Rust + axum + SQLite. Local auth (argon2 + JWT), node/device/peer management, provisioning, opkg feed. |
 | **Dashboard** | `apps/dashboard` | Angular admin UI — manage sparks, devices, users, VPN config; pause/resume sparks; onboard devices. |
-| **Windows client** | `apps/bifrost-windows` | Go system-tray VPN client (Cognito/JWT login, WireGuard service, failover). |
+| **Spark** | `apps/spark` | The on-site bridge (Rust) — adoption, heartbeat, and WireGuard provisioning against a UniFi controller. Runs inside each customer network. |
+| **Windows client** | `apps/bifrost-windows` | Go system-tray VPN client (WireGuard service, failover). Being replaced by a cross-platform Rust desktop client. |
 | **Android client** | `apps/bifrost-android` | Kotlin/Compose VPN client (adoption, QR onboarding, secure credential store). |
 | **Router client** | `apps/openwrt-client` | The `bifrost` package for GL.iNet/OpenWrt routers — installs from the master's opkg feed, ships its own config page, brings up WireGuard. |
-| **Node agent** | `apps/spark-agent` | Runs on a spark: adoption, heartbeat, applies config, IP-pool allocation. |
-| **UniFi bridge** | `libs/unifi-connect` | WireGuard management via the UniFi controller API. |
-
-> A serverless AWS backend (`apps/spark-lambda`, `libs/dynamo-*`, `infra/`, SST)
-> also lives here — it's the original deployment target. The **Rust `spark-server`
-> is the self-hosted successor** and the direction of the project.
 
 ## How it works
 
@@ -78,10 +73,10 @@ This is an Nx monorepo. The pieces that matter:
 
 ## Status
 
-Actively evolving. The self-hosted Rust control plane reaches full API parity
-with the original serverless backend and drops the AWS dependency (local users
-+ self-issued JWTs). Native clients exist for Windows, Android, and
-GL.iNet/OpenWrt routers.
+Actively evolving. The self-hosted Rust control plane is now the only backend —
+the original AWS serverless stack has been removed entirely (local users +
+self-issued JWTs, no cloud account anywhere). Native clients exist for Windows,
+Android, and GL.iNet/OpenWrt routers.
 
 ## License
 

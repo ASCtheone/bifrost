@@ -19,11 +19,3 @@ secrets/
 .npmrc
 scratchpad/
 **/*.log
-# Old AWS/SST artifacts not used by the container build.
-infra/
-sst.config.ts
-sst-env.d.ts
-.sst/
-apps/spark-agent/
-apps/spark-agent-2/
-apps/spark-lambda/
