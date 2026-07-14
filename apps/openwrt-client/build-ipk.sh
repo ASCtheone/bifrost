@@ -68,11 +68,16 @@ if ! uci -q get firewall.bifrost_ui >/dev/null 2>&1; then
 	/etc/init.d/firewall reload >/dev/null 2>&1
 fi
 
+# Give the LAN bridge a second IP so the config page can own :80 there, and name
+# it in dnsmasq (http://bifrost.lan/). Idempotent, and a no-op on a LAN it can't
+# safely pick an address in — in which case the page is still on :8099.
+/usr/bin/bifrost ui-setup 2>/dev/null
+
 # The service launches its own uhttpd for the config page (GL.iNet's uhttpd
 # won't run add-on instances), so just enable + start it.
 /etc/init.d/bifrost enable 2>/dev/null
 /etc/init.d/bifrost restart 2>/dev/null
-echo "Bifrost config page:  http://<router-ip>:8099/"
+echo "Bifrost config page:  $(/usr/bin/bifrost ui-url 2>/dev/null || echo 'http://<router-ip>:8099/')"
 exit 0
 EOF
 	cat >"$w/control/prerm" <<'EOF'
@@ -80,6 +85,9 @@ EOF
 [ -n "${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/bifrost stop 2>/dev/null
 /etc/init.d/bifrost disable 2>/dev/null
+# Drop the :80 alias, its dnsmasq name, and its firewall-zone membership —
+# otherwise removing the package would strand a second IP on the LAN bridge.
+/usr/bin/bifrost ui-teardown 2>/dev/null
 if uci -q get firewall.bifrost_ui >/dev/null 2>&1; then
 	uci -q delete firewall.bifrost_ui
 	uci commit firewall

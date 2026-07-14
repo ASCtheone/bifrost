@@ -49,7 +49,7 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
    Your own master also serves the same feed at `https://<your-master>/bifrost/feed`
    (baked into the server image), if you'd rather not depend on GitHub.
 2. **Install** — `opkg update`, then install **`bifrost`**.
-3. **Open the config page** — `http://<router-ip>:8099/`:
+3. **Open the config page** — **`http://bifrost.lan/`** (or `http://<router-ip>:8099/`):
    - Press **Get a pairing code**.
    - Click **Register in dashboard** (sign in if prompted), pick an expiry, confirm.
    - The router connects. Choose **Location** (Auto or a specific spark) and toggle
@@ -67,6 +67,31 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
 | `bifrost json`          | machine-readable status (used by the config page)          |
 | `bifrost refresh`       | re-fetch config from the master, reconnect if it changed   |
 | `bifrost killswitch`    | (re)apply the kill switch from config                      |
+| `bifrost ui-setup`      | create the `:80` alias + `bifrost.lan` DNS record (postinst) |
+| `bifrost ui-teardown`   | remove them again (prerm)                                  |
+| `bifrost ui-url`        | print where the config page is reachable                   |
+
+## The config page on port 80 (`http://bifrost.lan/`)
+
+The page always listens on **`:8099`**. On install it *also* becomes available at
+**`http://bifrost.lan/`** — no port — and here's how, because it's not obvious:
+
+GL.iNet's own uhttpd owns `:80` on the router's address, and uhttpd has no
+name-based virtual hosting, so that port can't be shared. Instead `bifrost
+ui-setup` gives the LAN bridge a **second IP** and binds a second uhttpd to
+`<alias>:80`. GL.iNet's UI is left completely untouched on the router's own
+address. dnsmasq — already the DNS server for every DHCP client — maps the name
+to the alias.
+
+The alias is **chosen at install**, not hardcoded: it takes the first free host
+address in the LAN `/24`, skipping the router's own address and the entire DHCP
+pool, so it can't collide with a client. If the LAN isn't a `/24`, `ui-setup`
+declines rather than guess, and the page simply stays on `:8099`.
+
+**Why `.lan` and not `.local`:** `.local` is reserved for mDNS (RFC 6762), and
+macOS, iOS and Windows resolve it *only* over multicast — a dnsmasq record for
+`.local` would silently fail on exactly those clients. Names in the LAN's own
+domain resolve everywhere, with no extra daemon.
 
 ## Config (`/etc/config/bifrost`)
 

@@ -129,7 +129,13 @@
 
   function paint(data) {
     var dot = $('dot'), t = $('statusText');
-    if (data.version) $('ver').textContent = 'bifrost v' + data.version;
+    if (data.version) {
+      var v = 'bifrost v' + data.version;
+      // Show the pretty LAN name once the :80 alias is up, so it's discoverable
+      // from the :8099 page people land on first.
+      if (data.uiUrl && data.uiUrl.indexOf(':8099') === -1) v += ' · ' + data.uiUrl;
+      $('ver').textContent = v;
+    }
     if (data.state === 'up') {
       dot.style.background = 'var(--success)';
       t.textContent = 'Connected — last handshake ' + (data.handshakeAge || '?') + 's ago';

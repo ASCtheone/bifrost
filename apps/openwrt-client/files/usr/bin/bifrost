@@ -331,8 +331,8 @@ cmd_json() {
 	# Available locations (from the last provision), for the UI picker.
 	nodes='[]'
 	[ -f "$RESP" ] && nodes=$(jq -c '[.nodes[] | {nodeId, name, location, role}]' "$RESP" 2>/dev/null || echo '[]')
-	printf '{"state":"%s","handshakeAge":"%s","version":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
-		"$state" "$age" "$BIFROST_VERSION" \
+	printf '{"state":"%s","handshakeAge":"%s","version":"%s","uiUrl":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
+		"$state" "$age" "$BIFROST_VERSION" "$(ui_url)" \
 		"$([ -n "$token" ] && echo true || echo false)" \
 		"$(cfg_get device_code)" "$(master)" "$(cfg_get location)" \
 		"$([ "$(cfg_get killswitch)" = 1 ] && echo true || echo false)" \
@@ -346,6 +346,128 @@ cmd_json() {
 cmd_up() { cfg_set enabled 1; }
 cmd_down() { cfg_set enabled 0; }
 
+# ── config page on :80 under a LAN name (bifrost.lan) ───────────
+#
+# GL.iNet's own uhttpd owns :80 on the router's address, and uhttpd has no
+# name-based virtual hosting — so we can't share that port. Instead we give the
+# LAN bridge a second IP and let our uhttpd own :80 *there*. dnsmasq (already the
+# resolver for every DHCP client) maps the name to it. GL.iNet's UI is untouched.
+#
+# `.lan`, not `.local`: .local is reserved for mDNS (RFC 6762), and macOS/iOS/
+# Windows resolve it only over multicast — a dnsmasq record for it would silently
+# fail on exactly those clients. Names under the LAN's own domain always resolve.
+
+# Index of the `lan` firewall zone, so the alias can be added to it explicitly.
+ui_lan_zone() {
+	local i=0
+	while uci -q get "firewall.@zone[$i]" >/dev/null 2>&1; do
+		[ "$(uci -q get "firewall.@zone[$i].name")" = lan ] && { echo "$i"; return 0; }
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# Pick a free host address in the LAN /24 for the alias: skip the router's own
+# address and the whole DHCP pool, so it can never collide with a client.
+# Only /24 is handled — anything else keeps the page on :8099 rather than guess.
+ui_pick_alias() {
+	local lan mask net last start limit pool_end i
+	lan=$(lan_ip)
+	mask=$(uci -q get network.lan.netmask)
+	[ "$mask" = 255.255.255.0 ] || return 1
+	net=${lan%.*}; last=${lan##*.}
+	start=$(uci -q get dhcp.lan.start); [ -n "$start" ] || start=100
+	limit=$(uci -q get dhcp.lan.limit); [ -n "$limit" ] || limit=150
+	pool_end=$((start + limit - 1))
+	i=2
+	while [ "$i" -le 254 ]; do
+		if [ "$i" -ne "$last" ] && { [ "$i" -lt "$start" ] || [ "$i" -gt "$pool_end" ]; }; then
+			echo "$net.$i"
+			return 0
+		fi
+		i=$((i + 1))
+	done
+	return 1
+}
+
+# Idempotent: safe to re-run on upgrade (postinst calls it every install).
+cmd_ui_setup() {
+	local domain alias dev zone
+	domain=$(cfg_get ui_domain); [ -n "$domain" ] || domain=bifrost.lan
+	alias=$(cfg_get ui_alias_ip)
+	if [ -z "$alias" ]; then
+		alias=$(ui_pick_alias) || {
+			log "LAN is not a /24 — no port-80 alias; config page stays on :8099"
+			return 0
+		}
+	fi
+	dev=$(lan_dev)
+
+	uci set network.bifrost_ui=interface
+	uci set network.bifrost_ui.proto=static
+	uci set network.bifrost_ui.ipaddr="$alias"
+	uci set network.bifrost_ui.netmask=255.255.255.0
+	# OpenWrt >= 21 names the L3 device `device`; 19.07 (still common on GL.iNet)
+	# calls it `ifname`. Write whichever key this build actually reads.
+	if uci -q get network.lan.device >/dev/null 2>&1; then
+		uci set network.bifrost_ui.device="$dev"
+	else
+		uci set network.bifrost_ui.ifname="$dev"
+	fi
+	uci commit network
+
+	# The alias rides the same bridge, so lan-zone rules already cover it — but
+	# say so explicitly rather than depend on that.
+	zone=$(ui_lan_zone) && {
+		uci -q del_list "firewall.@zone[$zone].network=bifrost_ui"
+		uci add_list "firewall.@zone[$zone].network=bifrost_ui"
+		uci commit firewall
+	}
+
+	uci -q del_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
+	uci add_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
+	uci commit dhcp
+
+	cfg_set ui_alias_ip "$alias"
+	cfg_set ui_domain "$domain"
+
+	/etc/init.d/network reload >/dev/null 2>&1
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1
+	/etc/init.d/firewall reload >/dev/null 2>&1
+	log "config page at http://$domain/ ($alias:80) and http://$(lan_ip):8099/"
+}
+
+# Undo everything cmd_ui_setup added (prerm). Leaves :8099 alone.
+cmd_ui_teardown() {
+	local domain alias zone
+	domain=$(cfg_get ui_domain)
+	alias=$(cfg_get ui_alias_ip)
+	[ -n "$domain" ] && [ -n "$alias" ] && {
+		uci -q del_list "dhcp.@dnsmasq[0].address=/$domain/$alias"
+		uci commit dhcp
+	}
+	zone=$(ui_lan_zone) && {
+		uci -q del_list "firewall.@zone[$zone].network=bifrost_ui"
+		uci commit firewall
+	}
+	uci -q delete network.bifrost_ui && uci commit network
+	/etc/init.d/network reload >/dev/null 2>&1
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+# Where the config page lives — the pretty name if the alias came up, else :8099.
+ui_url() {
+	local domain alias
+	domain=$(cfg_get ui_domain)
+	alias=$(cfg_get ui_alias_ip)
+	if [ -n "$domain" ] && [ -n "$alias" ]; then
+		echo "http://$domain/"
+	else
+		echo "http://$(lan_ip):8099/"
+	fi
+}
+
 # ── entrypoint ──────────────────────────────────────────────────
 
 case "${1:-}" in
@@ -358,6 +480,9 @@ case "${1:-}" in
 	down) cmd_down ;;
 	status) cmd_status ;;
 	json) cmd_json ;;
+	ui-setup) cmd_ui_setup ;;
+	ui-teardown) cmd_ui_teardown ;;
+	ui-url) ui_url ;;
 	run)
 		# Reactive daemon: always running, re-reads uci each 5s tick and acts on
 		# it, so the web UI only edits config and never restarts procd. Config is

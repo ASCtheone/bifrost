@@ -26,3 +26,16 @@ config bifrost 'settings'
 
 	# WireGuard interface name created on the router.
 	option ifname 'bifrost'
+
+	# Config page. It always listens on :8099. On install, `bifrost ui-setup` also
+	# gives the LAN bridge a second IP so it can own :80 there (GL.iNet's own UI
+	# keeps :80 on the router's address), and points this name at it via dnsmasq —
+	# so the page is reachable at http://bifrost.lan/ with no port.
+	#
+	# `.lan`, not `.local`: .local is mDNS-only on macOS/iOS/Windows, so a DNS
+	# record for it would silently fail there. Names in the LAN domain always work.
+	option ui_domain 'bifrost.lan'
+
+	# The alias address, chosen at install from a free slot in the LAN /24 (outside
+	# the DHCP pool). Empty = no alias (e.g. LAN isn't a /24) → :8099 only.
+	option ui_alias_ip ''
