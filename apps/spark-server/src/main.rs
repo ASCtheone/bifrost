@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod crypto;
 mod db;
 mod domain;
 mod error;
@@ -63,6 +64,23 @@ async fn main() -> anyhow::Result<()> {
     };
     let jwt = Arc::new(auth::JwtKeys::new(&jwt_secret, token_ttl_hours));
 
+    // Key for secrets at rest (the UniFi password). Defaults to the JWT secret so an
+    // existing deployment needs no config change — but that couples them: rotating
+    // jwt_secret makes stored UniFi passwords undecryptable, and they must be
+    // re-entered. Set `secret_key` explicitly to decouple the two.
+    let secret_key = config
+        .secret_key
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| jwt_secret.clone());
+    if config.secret_key.as_deref().unwrap_or("").is_empty() {
+        tracing::info!(
+            "no secret_key configured — deriving the at-rest encryption key from auth.jwt_secret; \
+             rotating that secret will require re-entering UniFi passwords"
+        );
+    }
+    let cipher = Arc::new(crypto::Cipher::from_secret(&secret_key));
+
     // First-run bootstrap: create a superadmin if the user store is empty and
     // bootstrap credentials are configured.
     routes::auth::bootstrap_admin(&pool, &config).await?;
@@ -73,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         pool,
         config: Arc::new(config),
         jwt,
+        cipher,
     };
 
     let cors = CorsLayer::new()
@@ -137,6 +156,9 @@ fn apply_env_overrides(config: &mut config::Config) {
     }
     if let Some(v) = set("BIFROST_DASHBOARD_DIR") {
         config.dashboard_dir = Some(v);
+    }
+    if let Some(v) = set("BIFROST_SECRET_KEY") {
+        config.secret_key = Some(v);
     }
     if let Some(v) = set("BIFROST_FEED_DIR") {
         config.feed_dir = v;

@@ -49,6 +49,17 @@ pub struct Node {
     pub tunnel_id: String,
     pub controller_url: String,
     pub controller_api_key: Option<String>,
+    /// UniFi controller the spark drives. Configured in the dashboard and served to
+    /// the spark over its node-key channel, so nothing is hand-edited on the box.
+    pub unifi_host: String,
+    pub unifi_port: i64,
+    pub unifi_site: String,
+    pub unifi_username: String,
+    /// base64(nonce || ciphertext) — see crypto::Cipher. Never leaves the server:
+    /// the dashboard gets `hasUnifiPassword`, the spark gets the plaintext.
+    #[serde(skip_serializing)]
+    pub unifi_password_enc: Option<String>,
+    pub unifi_insecure: bool,
     pub spark_vpn_name: Option<String>,
     pub spark_vpn_id: Option<String>,
     pub pending_vpn_create: bool,

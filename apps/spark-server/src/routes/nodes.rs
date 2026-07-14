@@ -22,6 +22,7 @@ pub fn routes() -> Router<AppState> {
         .route("/nodes/:nodeId", put(update_node).delete(remove_node))
         .route("/nodes/:nodeId/config", get(get_node_config))
         .route("/nodes/:nodeId/adopt", post(adopt_node))
+        .route("/nodes/:nodeId/reissue-code", post(reissue_code))
         .route("/nodes/:nodeId/create-vpn", post(create_vpn))
         .route("/nodes/:nodeId/revoke", post(revoke_node))
         .route("/nodes/:nodeId/delete-peer", post(delete_node_peer))
@@ -75,6 +76,15 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         "tunnelId": n.tunnel_id,
         "controllerUrl": n.controller_url,
         "hasControllerApiKey": n.controller_api_key.as_ref().map(|k| !k.is_empty()).unwrap_or(false),
+        // UniFi controller settings. The password is deliberately NOT returned —
+        // only whether one is set, so the UI can show "configured" without ever
+        // handing the credential back out to a browser.
+        "unifiHost": n.unifi_host,
+        "unifiPort": n.unifi_port,
+        "unifiSite": n.unifi_site,
+        "unifiUsername": n.unifi_username,
+        "hasUnifiPassword": n.unifi_password_enc.as_ref().map(|k| !k.is_empty()).unwrap_or(false),
+        "unifiInsecure": n.unifi_insecure,
         "sparkVpnName": n.spark_vpn_name,
         "sparkVpnId": n.spark_vpn_id,
         "pendingVpnCreate": n.pending_vpn_create,
@@ -161,6 +171,13 @@ struct UpdateNodeReq {
     priority: Option<i64>,
     #[serde(default, deserialize_with = "crate::routes::de_opt_field")]
     assign_to_email: Option<Option<String>>,
+    // UniFi controller, configured here rather than in a file on the spark.
+    unifi_host: Option<String>,
+    unifi_port: Option<i64>,
+    unifi_site: Option<String>,
+    unifi_username: Option<String>,
+    unifi_password: Option<String>,
+    unifi_insecure: Option<bool>,
 }
 
 async fn update_node(
@@ -174,6 +191,21 @@ async fn update_node(
         .await?
         .ok_or_else(|| AppError::NotFound("Node not found".into()))?;
 
+    if let Some(p) = req.unifi_port {
+        if !(1..=65535).contains(&p) {
+            return Err(AppError::BadRequest("unifiPort must be 1-65535".into()));
+        }
+    }
+    // Encrypt here, so the plaintext never reaches the repo layer or a query. An
+    // empty string means "clear it"; absent means "leave it alone" — otherwise the
+    // UI could not distinguish "don't touch the password" from "unset it", and every
+    // unrelated save would wipe it.
+    let unifi_password_enc = match req.unifi_password.as_deref() {
+        None => None,
+        Some("") => Some(String::new()),
+        Some(pw) => Some(st.cipher.encrypt(pw)?),
+    };
+
     let owner = req.assign_to_email.map(|opt| opt.unwrap_or_default()); // null → "" (unassign)
     let patch = node_repo::NodePatch {
         node_name: req.name,
@@ -183,6 +215,12 @@ async fn update_node(
         tunnel_id: req.tunnel_id,
         priority: req.priority,
         owner,
+        unifi_host: req.unifi_host,
+        unifi_port: req.unifi_port,
+        unifi_site: req.unifi_site,
+        unifi_username: req.unifi_username,
+        unifi_password_enc,
+        unifi_insecure: req.unifi_insecure,
     };
     if patch.is_empty() {
         return Err(AppError::BadRequest("No fields to update".into()));
@@ -237,6 +275,39 @@ async fn get_node_config(
         "adoptionCode": node.adoption_code,
         "apiUrl": std::env::var("BIFROST_API_URL").unwrap_or_default(),
         "wsUrl": std::env::var("BIFROST_WS_URL").unwrap_or_default(),
+    })))
+}
+
+// ── POST /nodes/{nodeId}/reissue-code ───────────────────────────
+
+/// Mint a new adoption code so this spark can be reinstalled from scratch.
+///
+/// Adoption consumes the code, so an adopted node has none — meaning a rebuilt or
+/// wiped box has nothing to register with. This returns it to `pending` with a fresh
+/// code and drops the existing node key.
+///
+/// That kills the running spark's credential, so it is a deliberate, separate action:
+/// the dashboard's copy button never calls this. Updating an existing install doesn't
+/// need a code at all (the installer reads its own install.conf).
+async fn reissue_code(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(node_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    node_repo::get_node(&st.pool, &node_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Node not found".into()))?;
+
+    let code = util::adoption_code();
+    let expires_at = util::iso_in(24 * 60 * 60);
+    node_repo::reissue_adoption_code(&st.pool, &node_id, &code, &expires_at).await?;
+    // A stale handoff key for the old adoption would otherwise linger its 300s.
+    node_repo::delete_pending_key(&st.pool, &node_id).await?;
+
+    Ok(Json(json!({
+        "nodeId": node_id,
+        "adoptionCode": code,
+        "expiresAt": expires_at,
     })))
 }
 

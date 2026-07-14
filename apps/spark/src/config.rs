@@ -15,10 +15,17 @@ pub struct Config {
     /// Seconds between heartbeat + config-sync cycles.
     #[serde(default = "default_poll")]
     pub poll_interval_seconds: u64,
-    pub unifi: UnifiConfig,
+    /// UniFi controller settings.
+    ///
+    /// Optional, and normally absent: these are configured in the dashboard and
+    /// delivered with each `desired-config` poll, so installing a spark doesn't mean
+    /// hand-editing credentials into a file on the box. A local block still wins if
+    /// present — useful for a controller the control plane shouldn't hold keys to.
+    #[serde(default)]
+    pub unifi: Option<UnifiConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct UnifiConfig {
     pub host: String,
     #[serde(default = "default_unifi_port")]

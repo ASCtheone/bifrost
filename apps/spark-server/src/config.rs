@@ -20,6 +20,10 @@ pub struct Config {
     /// `/app` (with SPA fallback) and redirects `/` there — so one VPS instance
     /// serves the dashboard + API + package feed together.
     pub dashboard_dir: Option<String>,
+    /// Key for secrets stored in the database (the UniFi password). If unset, it is
+    /// derived from `auth.jwt_secret` — which means rotating that secret forces the
+    /// UniFi passwords to be re-entered. Set this to decouple the two.
+    pub secret_key: Option<String>,
     #[serde(default)]
     pub auth: AuthConfig,
 }
@@ -93,6 +97,7 @@ impl Default for Config {
             database_url: default_database_url(),
             feed_dir: default_feed_dir(),
             dashboard_dir: None,
+            secret_key: None,
             auth: AuthConfig::default(),
         }
     }

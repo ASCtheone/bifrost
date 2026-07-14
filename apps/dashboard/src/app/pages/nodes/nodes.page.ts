@@ -35,6 +35,13 @@ interface NodeRow {
   readonly tunnelId: string;
   readonly controllerUrl: string;
   readonly hasControllerApiKey: boolean;
+  readonly unifiHost: string;
+  readonly unifiPort: number;
+  readonly unifiSite: string;
+  readonly unifiUsername: string;
+  /** The password itself is never sent to the browser — only whether one is set. */
+  readonly hasUnifiPassword: boolean;
+  readonly unifiInsecure: boolean;
   readonly sparkVpnName: string | null;
   readonly sparkVpnId: string | null;
   readonly pendingVpnCreate: boolean;
@@ -75,6 +82,13 @@ interface NodeEdit {
 interface UnifiEdit {
   controllerUrl: string;
   controllerApiKey: string;
+  unifiHost: string;
+  unifiPort: number;
+  unifiSite: string;
+  unifiUsername: string;
+  /** Blank means "leave the stored password alone" — see saveUnifi(). */
+  unifiPassword: string;
+  unifiInsecure: boolean;
 }
 
 type PanelTab = 'status' | 'config' | 'unifi';
@@ -110,6 +124,36 @@ type PanelTab = 'status' | 'config' | 'unifi';
             <button class="btn-primary" (click)="addNode()" [disabled]="addingNode()">
               {{ addingNode() ? 'Creating...' : 'Create' }}
             </button>
+          </div>
+        </div>
+      </div>
+    }
+
+    <!-- Install command. Shown right after creating a spark (the adoption code is
+         only useful if we actually surface it) and from the Reinstall action. -->
+    @if (installCmd()) {
+      <div class="overlay" (click)="installCmd.set(null)">
+        <div class="dialog dialog-wide" (click)="$event.stopPropagation()">
+          <h3>Install this spark</h3>
+          <p class="dialog-hint">
+            Run this on the machine inside the network you want to bridge. It asks
+            whether to install with Docker or as a systemd service, then registers the
+            spark here so you can adopt it. The UniFi controller is configured here in
+            the dashboard afterwards — not on the box.
+          </p>
+          <div class="copy-row">
+            <input type="text" readonly [value]="installCmd()" (focus)="selectAll($event)" />
+            <button class="btn-copy" (click)="copy(installCmd()!)">
+              <fa-icon [icon]="['fal', 'copy']" [fixedWidth]="true"></fa-icon>
+              {{ copied() ? 'Copied' : 'Copy' }}
+            </button>
+          </div>
+          <p class="dialog-hint dim">
+            The adoption code expires in 24 hours. Re-running the command later just
+            updates the spark — it won't ask anything again.
+          </p>
+          <div class="dialog-actions">
+            <button class="btn-primary" (click)="installCmd.set(null)">Done</button>
           </div>
         </div>
       </div>
@@ -245,6 +289,24 @@ type PanelTab = 'status' | 'config' | 'unifi';
               </div>
             }
             <div class="node-actions" (click)="$event.stopPropagation()">
+              @if (!node.shared) {
+                <!-- Copy the install one-liner for this spark, any time. Non-destructive:
+                     it carries the adoption code while the spark is still pending, and
+                     is the plain update command once adopted (an update needs no code).
+                     Minting a fresh code is the separate, explicit Reinstall action —
+                     copying must never revoke a running spark's key. -->
+                <button
+                  class="action-btn"
+                  (click)="copyInstall(node)"
+                  [title]="node.adoptionCode ? 'Copy install command (with adoption code)' : 'Copy update command'"
+                >
+                  @if (copiedNodeId() === node.id) {
+                    <fa-icon [icon]="['fal', 'circle-check']" [fixedWidth]="true"></fa-icon>
+                  } @else {
+                    <fa-icon [icon]="['fal', 'copy']" [fixedWidth]="true"></fa-icon>
+                  }
+                </button>
+              }
               @if (!node.shared && isAdmin()) {
                 <button class="action-btn" (click)="openShareDialog(node.id)" title="Share spark">
                   <fa-icon [icon]="['fal', 'share-nodes']" [fixedWidth]="true"></fa-icon>
@@ -262,6 +324,14 @@ type PanelTab = 'status' | 'config' | 'unifi';
                   } @else {
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
                   }
+                </button>
+              }
+              @if (node.adoptionStatus === 'adopted' && isAdmin() && !node.shared) {
+                <!-- Issues a NEW adoption code and drops the current key, so the spark
+                     can be built from scratch. Confirm-gated; the copy button above is
+                     the non-destructive path for a plain update. -->
+                <button class="action-btn warning" (click)="reinstall(node)" [disabled]="busyNodeId() === node.id" title="Reinstall — issue a new adoption code">
+                  <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
                 </button>
               }
               @if (node.adoptionStatus === 'adopted') {
@@ -408,14 +478,45 @@ type PanelTab = 'status' | 'config' | 'unifi';
                     @if (editingUnifiId() === node.id) {
                       <div class="edit-form compact">
                         <div class="edit-grid">
-                          <div class="field-sm full">
-                            <label>Controller URL</label>
-                            <input type="text" [(ngModel)]="unifiForm.controllerUrl" name="unifiUrl" placeholder="https://192.168.1.1" />
+                          <div class="field-sm">
+                            <label>Controller host</label>
+                            <input type="text" [(ngModel)]="unifiForm.unifiHost" name="unifiHost" placeholder="192.168.1.1" />
+                          </div>
+                          <div class="field-sm">
+                            <label>Port</label>
+                            <input type="number" [(ngModel)]="unifiForm.unifiPort" name="unifiPort" placeholder="443" />
+                          </div>
+                          <div class="field-sm">
+                            <label>Site</label>
+                            <input type="text" [(ngModel)]="unifiForm.unifiSite" name="unifiSite" placeholder="default" />
+                          </div>
+                          <div class="field-sm">
+                            <label>Username</label>
+                            <input type="text" [(ngModel)]="unifiForm.unifiUsername" name="unifiUser" placeholder="bifrost" autocomplete="off" />
                           </div>
                           <div class="field-sm full">
-                            <label>API Key</label>
-                            <input type="password" [(ngModel)]="unifiForm.controllerApiKey" name="unifiKey" placeholder="Enter API key" />
-                            <span class="field-hint">Generate from UniFi Console → Settings → API Keys</span>
+                            <label>Password</label>
+                            <input
+                              type="password"
+                              [(ngModel)]="unifiForm.unifiPassword"
+                              name="unifiPass"
+                              autocomplete="new-password"
+                              [placeholder]="node.hasUnifiPassword ? 'Unchanged — type to replace' : 'Controller password'"
+                            />
+                            <span class="field-hint">
+                              Stored encrypted and sent only to this spark. Leave blank to keep the current one.
+                            </span>
+                          </div>
+                          <div class="field-sm full">
+                            <label class="inline">
+                              <input type="checkbox" [(ngModel)]="unifiForm.unifiInsecure" name="unifiInsecure" />
+                              Accept the controller's self-signed certificate (usual for UniFi)
+                            </label>
+                          </div>
+                          <div class="field-sm full">
+                            <label>WireGuard endpoint</label>
+                            <input type="text" [(ngModel)]="unifiForm.controllerUrl" name="unifiUrl" placeholder="vpn.example.com" />
+                            <span class="field-hint">Public host devices connect to for the tunnel — not the controller.</span>
                           </div>
                         </div>
                         <div class="edit-actions">
@@ -426,13 +527,28 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         </div>
                       </div>
                     } @else {
+                      @if (!node.unifiHost) {
+                        <div class="empty-state">
+                          No UniFi controller configured — this spark is idle until you set one.
+                        </div>
+                      }
                       <div class="info-row">
-                        <span class="info-label">Controller URL</span>
-                        <span class="info-value mono">{{ node.controllerUrl || '—' }}</span>
+                        <span class="info-label">Controller</span>
+                        <span class="info-value mono">
+                          {{ node.unifiHost ? node.unifiHost + ':' + node.unifiPort + ' (' + node.unifiSite + ')' : '—' }}
+                        </span>
                       </div>
                       <div class="info-row">
-                        <span class="info-label">API Key</span>
-                        <span class="info-value">{{ node.hasControllerApiKey ? '••••••••••••' : 'Not configured' }}</span>
+                        <span class="info-label">Username</span>
+                        <span class="info-value mono">{{ node.unifiUsername || '—' }}</span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">Password</span>
+                        <span class="info-value">{{ node.hasUnifiPassword ? '•••••••••••• (encrypted)' : 'Not configured' }}</span>
+                      </div>
+                      <div class="info-row">
+                        <span class="info-label">WireGuard endpoint</span>
+                        <span class="info-value mono">{{ node.controllerUrl || '—' }}</span>
                       </div>
                     }
                   </div>
@@ -588,6 +704,15 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .field input:focus { outline: none; border-color: var(--accent); }
     .error-msg { background: color-mix(in srgb, var(--error) 10%, transparent); color: var(--error); font-size: 0.8rem; padding: 0.5rem 0.75rem; border-radius: 8px; margin-bottom: 1rem; }
     .dialog-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .dialog-wide { width: 560px; max-width: calc(100vw - 3rem); }
+    .dialog-hint { margin: 0 0 1rem; font-size: 0.8rem; line-height: 1.5; color: var(--text-tertiary); }
+    .dialog-hint.dim { margin: 0.75rem 0 1.25rem; color: var(--text-disabled); }
+    .copy-row { display: flex; gap: 0.5rem; }
+    .copy-row input { flex: 1; min-width: 0; padding: 0.6rem 0.75rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
+    .btn-copy { flex-shrink: 0; display: flex; align-items: center; gap: 0.4rem; padding: 0.6rem 0.8rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 0.78rem; cursor: pointer; transition: border-color 0.15s ease, color 0.15s ease; }
+    .btn-copy:hover { border-color: var(--accent); color: var(--accent); }
+    .field-sm label.inline { display: flex; align-items: center; gap: 0.5rem; text-transform: none; letter-spacing: 0; font-size: 0.75rem; color: var(--text-tertiary); }
+    .field-sm label.inline input { width: auto; }
 
     /* Node cards */
     .nodes-list { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -784,7 +909,78 @@ export class NodesPage implements OnInit, OnDestroy {
   editingNodeId = signal<string | null>(null);
   editForm: NodeEdit = { name: '', controllerUrl: '', tunnelUrl: '', tunnelId: '', priority: 100 };
   editingUnifiId = signal<string | null>(null);
-  unifiForm: UnifiEdit = { controllerUrl: '', controllerApiKey: '' };
+  unifiForm: UnifiEdit = {
+    controllerUrl: '',
+    controllerApiKey: '',
+    unifiHost: '',
+    unifiPort: 443,
+    unifiSite: 'default',
+    unifiUsername: '',
+    unifiPassword: '',
+    unifiInsecure: true,
+  };
+
+  /** The one-liner shown in the install dialog; null when the dialog is closed. */
+  installCmd = signal<string | null>(null);
+  copied = signal(false);
+  copiedNodeId = signal<string | null>(null);
+
+  /**
+   * The install/update command for a spark.
+   *
+   * With an adoption code while the spark is still pending; without one once it's
+   * adopted — at that point the installer reads its own install.conf and an update
+   * needs no code. Minting a fresh code is `reinstall()`, never this.
+   */
+  private installCommandFor(code: string | null): string {
+    const base =
+      'curl -fsSL https://raw.githubusercontent.com/ASCtheone/bifrost/master/scripts/install-spark.sh | sh';
+    return code ? `${base} -s -- ${code}` : base;
+  }
+
+  selectAll(e: Event): void {
+    (e.target as HTMLInputElement).select();
+  }
+
+  async copy(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard needs a secure context; the field is readonly + select-on-focus,
+      // so it stays copyable by hand when this is blocked.
+      return;
+    }
+    this.copied.set(true);
+    setTimeout(() => this.copied.set(false), 2000);
+  }
+
+  async copyInstall(node: NodeRow): Promise<void> {
+    await this.copy(this.installCommandFor(node.adoptionCode));
+    this.copiedNodeId.set(node.id);
+    setTimeout(() => this.copiedNodeId.set(null), 2000);
+  }
+
+  /**
+   * Mint a fresh adoption code so this spark can be installed from scratch again.
+   * Destructive — it drops the current node key, so a running spark stops until it
+   * re-registers. Hence the confirm, and hence it is not what the copy button does.
+   */
+  async reinstall(node: NodeRow): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Reinstall spark?',
+      message:
+        `This issues a new adoption code for "${node.name}" and revokes its current key. ` +
+        `The running spark will stop working until it is reinstalled and re-adopted. ` +
+        `To simply update an existing spark, use the copy button instead — no new code is needed.`,
+      confirmLabel: 'Issue new code',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.withBusy(node.id, async () => {
+      const res = await this.api.post<{ adoptionCode: string }>(`/nodes/${node.id}/reissue-code`);
+      this.installCmd.set(this.installCommandFor(res.adoptionCode));
+    });
+  }
 
   ngOnInit(): void {
     this.fetchNodes();
@@ -858,6 +1054,13 @@ export class NodesPage implements OnInit, OnDestroy {
     this.unifiForm = {
       controllerUrl: node.controllerUrl,
       controllerApiKey: '',
+      unifiHost: node.unifiHost,
+      unifiPort: node.unifiPort || 443,
+      unifiSite: node.unifiSite || 'default',
+      unifiUsername: node.unifiUsername,
+      // Never prefilled — the server doesn't send it back. Blank = leave as-is.
+      unifiPassword: '',
+      unifiInsecure: node.unifiInsecure,
     };
     this.editingUnifiId.set(node.id);
   }
@@ -903,9 +1106,15 @@ export class NodesPage implements OnInit, OnDestroy {
     this.addError.set('');
     this.addingNode.set(true);
     try {
-      await this.api.post('/nodes', { name: this.newNodeName || undefined });
+      // The server mints an adoption code here. Surface it as a ready-to-run install
+      // command — previously this response was discarded and the code was only
+      // reachable by downloading a JSON file and reading it by hand.
+      const res = await this.api.post<{ adoptionCode: string }>('/nodes', {
+        name: this.newNodeName || undefined,
+      });
       this.showAddDialog.set(false);
       this.newNodeName = '';
+      this.installCmd.set(this.installCommandFor(res.adoptionCode));
       await this.fetchNodes();
     } catch (err) {
       this.addError.set(err instanceof Error ? err.message : 'Failed to create node');
@@ -1116,11 +1325,23 @@ export class NodesPage implements OnInit, OnDestroy {
 
   async saveUnifi(nodeId: string): Promise<void> {
     await this.withBusy(nodeId, async () => {
-      const payload: Record<string, string> = {
-        controllerUrl: this.unifiForm.controllerUrl,
+      const f = this.unifiForm;
+      const payload: Record<string, string | number | boolean> = {
+        controllerUrl: f.controllerUrl,
+        unifiHost: f.unifiHost,
+        unifiPort: Number(f.unifiPort) || 443,
+        unifiSite: f.unifiSite || 'default',
+        unifiUsername: f.unifiUsername,
+        unifiInsecure: f.unifiInsecure,
       };
-      if (this.unifiForm.controllerApiKey) {
-        payload['controllerApiKey'] = this.unifiForm.controllerApiKey;
+      // Only send the password when the user actually typed one. Omitting it leaves
+      // the stored value alone — otherwise saving any other field (say, the port)
+      // would blank out the password.
+      if (f.unifiPassword) {
+        payload['unifiPassword'] = f.unifiPassword;
+      }
+      if (f.controllerApiKey) {
+        payload['controllerApiKey'] = f.controllerApiKey;
       }
       await this.api.put(`/nodes/${nodeId}`, payload);
       this.editingUnifiId.set(null);

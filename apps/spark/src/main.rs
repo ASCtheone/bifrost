@@ -44,20 +44,79 @@ async fn main() -> Result<()> {
     let node_key = state.node_key.clone().unwrap();
     tracing::info!(node_id = %node_id, "spark adopted; starting sync loop");
 
-    // ── UniFi client ────────────────────────────────────────────
-    let mut unifi = UnifiClient::new(&cfg.unifi)?;
-    if let Err(e) = unifi.login().await {
-        tracing::warn!("initial unifi login failed: {e:#} (will retry)");
-    }
-
     // ── Sync loop ───────────────────────────────────────────────
+    //
+    // The UniFi client is built lazily, from whichever config we have: a local
+    // [unifi] block if one was provided, else whatever the dashboard sends with each
+    // poll. It is rebuilt when that config changes, so editing the controller
+    // credentials in the UI takes effect on the next cycle without a restart.
     let interval = Duration::from_secs(cfg.poll_interval_seconds.max(5));
+    let mut unifi: Option<UnifiClient> = None;
+    let mut applied: Option<config::UnifiConfig> = None;
+    let mut idle_logged = false;
+
     loop {
-        if let Err(e) = sync_once(&control, &mut unifi, &node_id, &node_key).await {
+        if let Err(e) = tick(
+            &control,
+            &cfg,
+            &node_id,
+            &node_key,
+            &mut unifi,
+            &mut applied,
+            &mut idle_logged,
+        )
+        .await
+        {
             tracing::warn!("sync cycle failed: {e:#}");
         }
         tokio::time::sleep(interval).await;
     }
+}
+
+/// One cycle: fetch desired state, make sure the UniFi client matches the configured
+/// controller, then reconcile.
+async fn tick(
+    control: &Control,
+    cfg: &Config,
+    node_id: &str,
+    node_key: &str,
+    unifi: &mut Option<UnifiClient>,
+    applied: &mut Option<config::UnifiConfig>,
+    idle_logged: &mut bool,
+) -> Result<()> {
+    let desired = control.desired_config(node_id, node_key).await?;
+
+    // Local config wins when present; otherwise take what the dashboard sends.
+    let wanted = cfg.unifi.clone().or_else(|| desired.unifi.clone());
+
+    let Some(wanted) = wanted else {
+        // Not an error: the spark is adopted and healthy, just not told which
+        // controller to drive yet. Say so once rather than every poll interval.
+        if !*idle_logged {
+            tracing::info!(
+                "no UniFi controller configured — set it in the dashboard (Sparks → this spark → UniFi); idling"
+            );
+            *idle_logged = true;
+        }
+        *unifi = None;
+        *applied = None;
+        heartbeat(control, node_id, node_key, None, &[]).await?;
+        return Ok(());
+    };
+    *idle_logged = false;
+
+    if unifi.is_none() || applied.as_ref() != Some(&wanted) {
+        tracing::info!(host = %wanted.host, site = %wanted.site, "connecting to UniFi controller");
+        let mut client = UnifiClient::new(&wanted)?;
+        if let Err(e) = client.login().await {
+            tracing::warn!("unifi login failed: {e:#} (will retry next cycle)");
+        }
+        *unifi = Some(client);
+        *applied = Some(wanted);
+    }
+    let client = unifi.as_mut().expect("just set");
+
+    sync_once(control, client, node_id, node_key, &desired).await
 }
 
 /// Register with the control plane and poll until an admin adopts us.
@@ -83,9 +142,13 @@ async fn adopt(cfg: &Config, control: &Control, state_dir: &std::path::Path, sta
 }
 
 /// One reconcile cycle: pull desired config, apply to UniFi, heartbeat actual state.
-async fn sync_once(control: &Control, unifi: &mut UnifiClient, node_id: &str, node_key: &str) -> Result<()> {
-    let desired: DesiredConfig = control.desired_config(node_id, node_key).await?;
-
+async fn sync_once(
+    control: &Control,
+    unifi: &mut UnifiClient,
+    node_id: &str,
+    node_key: &str,
+    desired: &DesiredConfig,
+) -> Result<()> {
     // Pick the WireGuard server this spark manages.
     let servers = unifi.list_wg_servers().await?;
     let server = match &desired.vpn_name {

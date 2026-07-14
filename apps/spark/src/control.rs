@@ -35,6 +35,10 @@ pub struct DesiredConfig {
     /// UniFi peer ids the control plane has queued for deletion.
     #[serde(default)]
     pub pending_peer_deletions: Vec<String>,
+    /// The UniFi controller to drive, as configured in the dashboard. `None` until an
+    /// operator fills it in — the spark then idles instead of failing.
+    #[serde(default)]
+    pub unifi: Option<crate::config::UnifiConfig>,
 }
 
 impl Control {

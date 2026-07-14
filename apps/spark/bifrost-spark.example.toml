@@ -13,11 +13,18 @@ adoption_code = "XXX-XXX-XXX"
 # Seconds between heartbeat + UniFi reconcile cycles.
 poll_interval_seconds = 30
 
-# The local UniFi controller this spark bridges to.
-[unifi]
-host = "192.168.1.1"     # UniFi gateway / controller IP or hostname
-port = 443
-site = "default"
-username = "bifrost"     # a local UniFi admin account for this spark
-password = "change-me"
-insecure = true          # accept the controller's self-signed TLS cert
+# The UniFi controller is configured IN THE DASHBOARD (Sparks → your spark → UniFi)
+# and delivered to the spark with each poll, so credentials don't have to be typed
+# onto every box. Until it is set there, the spark idles and says so in its log.
+#
+# The optional [unifi] block below overrides that: if present it wins, and the
+# control plane is never asked. Use it only if you'd rather the server not hold the
+# controller's credentials at all.
+#
+# [unifi]
+# host = "192.168.1.1"     # UniFi gateway / controller IP or hostname
+# port = 443
+# site = "default"
+# username = "bifrost"     # a local UniFi admin account for this spark
+# password = "change-me"
+# insecure = true          # accept the controller's self-signed TLS cert

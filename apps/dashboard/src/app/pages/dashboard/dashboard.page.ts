@@ -110,31 +110,8 @@ interface NodesResponse {
       </div>
     </div>
 
-    <div class="panel install-panel">
-      <div class="panel-header">
-        <h3>Add a spark</h3>
-      </div>
-      <div class="panel-body">
-        <p class="install-hint">
-          Run this on the machine that sits inside the network you want to bridge. It
-          asks whether to install with Docker or as a systemd service, then registers
-          the spark here for you to adopt. Re-run it any time to update — it won't ask
-          again.
-        </p>
-        <div class="install-cmd">
-          <code>{{ installCommand }}</code>
-          <button class="copy-btn" (click)="copyInstall()">{{ copied() ? 'Copied' : 'Copy' }}</button>
-        </div>
-      </div>
-    </div>
   `,
   styles: [`
-    .install-panel { margin-top: 1.5rem; }
-    .install-hint { margin: 0 0 0.9rem; font-size: 0.8rem; line-height: 1.5; color: var(--text-tertiary); }
-    .install-cmd { display: flex; align-items: center; gap: 0.75rem; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.85rem; }
-    .install-cmd code { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: var(--text-primary); overflow-x: auto; white-space: nowrap; }
-    .copy-btn { flex-shrink: 0; padding: 0.4rem 0.75rem; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary, var(--text-primary)); font-size: 0.75rem; cursor: pointer; transition: border-color 0.15s ease, color 0.15s ease; }
-    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
     .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
     .stat-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
     .stat-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
@@ -185,25 +162,6 @@ export class DashboardPage implements OnInit, OnDestroy {
   peerCount = signal(0);
   errorCount = signal(0);
 
-  /**
-   * One-liner that installs *or updates* a spark. It asks Docker vs. systemd on the
-   * first run and records the answer, so re-running only updates.
-   */
-  readonly installCommand =
-    'curl -fsSL https://raw.githubusercontent.com/ASCtheone/bifrost/master/scripts/install-spark.sh | sh';
-  readonly copied = signal(false);
-
-  async copyInstall(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(this.installCommand);
-    } catch {
-      // Clipboard API needs a secure context; on plain HTTP it throws. The command
-      // is on screen and selectable either way, so this is not worth an error.
-      return;
-    }
-    this.copied.set(true);
-    setTimeout(() => this.copied.set(false), 2000);
-  }
   configVersion = signal(0);
   primaryNode = signal<string | null>(null);
   recentNodes = signal<NodeInfo[]>([]);

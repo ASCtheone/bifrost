@@ -61,10 +61,33 @@ async fn desired_config(
         .and_then(|j| serde_json::from_value::<Vec<String>>(j.0.clone()).ok())
         .unwrap_or_default();
 
+    // The UniFi controller this spark should drive. Configured in the dashboard and
+    // handed over here — the spark no longer carries these in a local file.
+    //
+    // This is the one place the password is decrypted, and it goes only to a caller
+    // that already proved it holds this node's key. `null` when the operator hasn't
+    // filled it in yet (or the at-rest key was rotated, so the blob no longer
+    // decrypts); the spark idles and says so rather than failing.
+    let unifi = match st
+        .cipher
+        .decrypt(node.unifi_password_enc.as_deref().unwrap_or(""))?
+    {
+        Some(pw) if !node.unifi_host.is_empty() && !node.unifi_username.is_empty() => json!({
+            "host": node.unifi_host,
+            "port": node.unifi_port,
+            "site": node.unifi_site,
+            "username": node.unifi_username,
+            "password": pw,
+            "insecure": node.unifi_insecure,
+        }),
+        _ => Value::Null,
+    };
+
     Ok(Json(json!({
         "vpnName": node.spark_vpn_name,
         "peers": peers,
         "pendingPeerDeletions": pending,
+        "unifi": unifi,
     })))
 }
 

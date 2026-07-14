@@ -187,6 +187,31 @@ pub async fn set_node_key_hash(pool: &SqlitePool, node_id: &str, key_hash: &str)
     Ok(())
 }
 
+/// Issue a fresh adoption code for an existing node and send it back to `pending`,
+/// dropping the current node key. This is the "reinstall this spark" path: adoption
+/// consumes the code (see `set_node_key_hash`), so a rebuilt box has nothing to
+/// register with. Destructive by design — the old key stops working — so it must
+/// never be triggered by anything as casual as a copy button.
+pub async fn reissue_adoption_code(
+    pool: &SqlitePool,
+    node_id: &str,
+    code: &str,
+    expires_at: &str,
+) -> AppResult<u64> {
+    let now = now_iso();
+    let res = sqlx::query(
+        "UPDATE nodes SET adoption_code = ?, code_expires_at = ?, adoption_status = 'pending', \
+         node_key_hash = NULL, key_issued_at = NULL, updated_at = ? WHERE node_id = ?",
+    )
+    .bind(code)
+    .bind(expires_at)
+    .bind(&now)
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 pub async fn revoke_node_key(pool: &SqlitePool, node_id: &str) -> AppResult<()> {
     sqlx::query(
         "UPDATE nodes SET adoption_status = 'revoked', updated_at = ?, \
@@ -212,6 +237,14 @@ pub struct NodePatch {
     pub tunnel_id: Option<String>,
     pub priority: Option<i64>,
     pub owner: Option<String>,
+    pub unifi_host: Option<String>,
+    pub unifi_port: Option<i64>,
+    pub unifi_site: Option<String>,
+    pub unifi_username: Option<String>,
+    /// Already-encrypted blob (the route encrypts before it gets here, so a
+    /// plaintext password can never reach the query builder by mistake).
+    pub unifi_password_enc: Option<String>,
+    pub unifi_insecure: Option<bool>,
 }
 
 impl NodePatch {
@@ -223,6 +256,12 @@ impl NodePatch {
             && self.tunnel_id.is_none()
             && self.priority.is_none()
             && self.owner.is_none()
+            && self.unifi_host.is_none()
+            && self.unifi_port.is_none()
+            && self.unifi_site.is_none()
+            && self.unifi_username.is_none()
+            && self.unifi_password_enc.is_none()
+            && self.unifi_insecure.is_none()
     }
 }
 
@@ -247,6 +286,24 @@ pub async fn patch_node(pool: &SqlitePool, node_id: &str, p: NodePatch) -> AppRe
     }
     if let Some(v) = p.priority {
         qb.push(", priority = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_host {
+        qb.push(", unifi_host = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_port {
+        qb.push(", unifi_port = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_site {
+        qb.push(", unifi_site = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_username {
+        qb.push(", unifi_username = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_password_enc {
+        qb.push(", unifi_password_enc = ").push_bind(v);
+    }
+    if let Some(v) = p.unifi_insecure {
+        qb.push(", unifi_insecure = ").push_bind(v);
     }
     if let Some(owner) = p.owner {
         qb.push(", owner_id = ").push_bind(owner.clone());
