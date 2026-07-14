@@ -162,7 +162,27 @@ services:
       - ./:/etc/bifrost      # bifrost-spark.toml + persisted spark-state.json
     restart: unless-stopped
 EOF
-	( cd "$DIR" && $SUDO docker compose pull && $SUDO docker compose up -d )
+
+	# The image is public, so the pull needs no credentials. But if this host ever
+	# ran `docker login ghcr.io` and that token has since expired or been revoked,
+	# Docker sends it anyway instead of asking for an anonymous token, and the
+	# registry answers `denied` — on an image anyone else can pull freely.
+	#
+	# Note we run docker under sudo, so the credential that matters is ROOT's
+	# (/root/.docker/config.json), not the invoking user's. `docker logout` as
+	# yourself does not fix it, which makes this genuinely confusing to hit.
+	#
+	# Drop the stale credential and retry once, rather than surfacing a bare
+	# "denied" that says nothing about the cause.
+	if ! ( cd "$DIR" && $SUDO docker compose pull ); then
+		warn "pull failed — retrying without any stored ghcr.io credentials"
+		$SUDO docker logout ghcr.io >/dev/null 2>&1 || true
+		( cd "$DIR" && $SUDO docker compose pull ) || die \
+			"could not pull $IMAGE. The image is public, so this is usually a stale
+       credential: try 'sudo docker logout ghcr.io' and re-run. If you need this
+       host logged in to ghcr.io, re-login with a valid token."
+	fi
+	( cd "$DIR" && $SUDO docker compose up -d )
 }
 
 # ── native (static binary + systemd) ────────────────────────────
