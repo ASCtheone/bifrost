@@ -29,10 +29,26 @@ pub struct SparkServer {
 /// spark. With zero or several servers reported there is nothing unambiguous to pick.
 pub fn spark_server_for(node: &Node) -> Option<SparkServer> {
     let servers = node.actual_config.as_ref()?.get("servers")?.as_array()?;
-    let s = match node.spark_vpn_name.as_deref() {
-        Some(name) => servers
-            .iter()
-            .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))?,
+    // Prefer the named server, but fall back to the sole reported server when the name
+    // doesn't match — not only when it's unset. The spark reports exactly one server (the
+    // one it actually provisions against) and its own reconcile uses this same name-then
+    // -first fallback. When `spark_vpn_name` is set to a name no reported server has —
+    // which is the normal state after "Create VPN", since that stores "SPARK VPN" but
+    // server auto-creation isn't implemented, so the spark falls back to an existing
+    // server with a different name — a strict read side would find nothing and the router
+    // would show "No spark available" despite a healthy spark provisioning peers. The one
+    // case still refused is genuine ambiguity: several reported servers, none matching.
+    let named = node
+        .spark_vpn_name
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .and_then(|name| {
+            servers
+                .iter()
+                .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))
+        });
+    let s = match named {
+        Some(s) => s,
         None if servers.len() == 1 => &servers[0],
         None => return None,
     };
@@ -142,11 +158,32 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
         if !node_owner.is_empty() && !device_owner.is_empty() && node_owner != device_owner {
             continue;
         }
-        let Some(server) = spark_server_for(node) else { continue };
+        // From here the node is a candidate for this device, so a skip is a real reason
+        // the device gets no config ("No spark available" in the UI). Log which one — the
+        // three below are the only ways a healthy, adopted, owner-matched spark still
+        // yields nothing, and each used to fail silently.
+        let Some(server) = spark_server_for(node) else {
+            tracing::info!(
+                node = %node.node_id, device = %device.device_id,
+                spark_vpn_name = ?node.spark_vpn_name,
+                "device gets no config here: no reported WireGuard server matched (and not a single unambiguous one to fall back to)"
+            );
+            continue;
+        };
         if server.public_key.is_empty() {
+            tracing::info!(
+                node = %node.node_id, device = %device.device_id,
+                "device gets no config here: the reported server has an empty public key"
+            );
             continue;
         }
-        let Some(endpoint) = node_endpoint(node) else { continue };
+        let Some(endpoint) = node_endpoint(node) else {
+            tracing::info!(
+                node = %node.node_id, device = %device.device_id,
+                "device gets no config here: node has no endpoint (spark never heartbeated an IPv4 and no endpoint override is set)"
+            );
+            continue;
+        };
 
         let wg_config = wg::build_config(&WgConfigParams {
             private_key: &device.private_key,
@@ -228,4 +265,65 @@ pub async fn create_device_for_owner(
     };
     device_repo::put_device(pool, &device).await?;
     Ok(device)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn node_with(spark_vpn_name: Option<&str>, servers: serde_json::Value) -> Node {
+        Node {
+            spark_vpn_name: spark_vpn_name.map(String::from),
+            actual_config: Some(SqlxJson(json!({ "servers": servers, "peers": [] }))),
+            ..Default::default()
+        }
+    }
+
+    fn one_server() -> serde_json::Value {
+        json!([{ "name": "Miguel VPN APT", "publicKey": "PUBKEY", "serverPort": 51821, "serverAddress": "192.168.3.1/24" }])
+    }
+
+    #[test]
+    fn falls_back_to_the_sole_server_when_the_name_does_not_match() {
+        // The regression: "Create VPN" stored "SPARK VPN", but the spark provisions on
+        // (and reports) the pre-existing "Miguel VPN APT". A strict read side returned
+        // None here and the router showed "No spark available".
+        let node = node_with(Some("SPARK VPN"), one_server());
+        let s = spark_server_for(&node).expect("should fall back to the sole server");
+        assert_eq!(s.public_key, "PUBKEY");
+        assert_eq!(s.server_port, 51821);
+    }
+
+    #[test]
+    fn prefers_the_named_server_when_it_matches() {
+        let servers = json!([
+            { "name": "other", "publicKey": "WRONG", "serverPort": 51820, "serverAddress": "" },
+            { "name": "Miguel VPN APT", "publicKey": "RIGHT", "serverPort": 51821, "serverAddress": "" },
+        ]);
+        let node = node_with(Some("Miguel VPN APT"), servers);
+        assert_eq!(spark_server_for(&node).unwrap().public_key, "RIGHT");
+    }
+
+    #[test]
+    fn refuses_to_guess_among_several_unmatched_servers() {
+        let servers = json!([
+            { "name": "a", "publicKey": "A", "serverPort": 1, "serverAddress": "" },
+            { "name": "b", "publicKey": "B", "serverPort": 2, "serverAddress": "" },
+        ]);
+        let node = node_with(Some("SPARK VPN"), servers);
+        assert!(spark_server_for(&node).is_none());
+    }
+
+    #[test]
+    fn uses_the_sole_server_when_no_name_is_set() {
+        let node = node_with(None, one_server());
+        assert_eq!(spark_server_for(&node).unwrap().public_key, "PUBKEY");
+    }
+
+    #[test]
+    fn none_when_no_config_reported() {
+        let node = Node { spark_vpn_name: Some("x".into()), actual_config: None, ..Default::default() };
+        assert!(spark_server_for(&node).is_none());
+    }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "spark-server"
-version = "0.7.8"
+version = "0.7.9"
 edition = "2021"
 description = "Bifrost self-hosted control plane (replaces the AWS serverless backend)"
 
