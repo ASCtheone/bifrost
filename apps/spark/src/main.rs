@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use config::{Config, State};
 use control::{Control, DesiredConfig};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -261,23 +261,57 @@ async fn reconcile(
 
     // Reconcile peers.
     let actual = unifi.list_peers(&server.id).await?;
-    let actual_pks: HashSet<&str> = actual.iter().map(|p| p.public_key.as_str()).collect();
+    let actual_by_pk: HashMap<&str, &unifi::WgPeer> =
+        actual.iter().map(|p| (p.public_key.as_str(), p)).collect();
 
     let mut created = 0;
+    let mut readdressed = 0;
     for dp in &desired.peers {
-        if dp.public_key.is_empty() || actual_pks.contains(dp.public_key.as_str()) {
+        if dp.public_key.is_empty() {
             continue;
         }
-        let ip = dp.assigned_ip.split('/').next().unwrap_or(&dp.assigned_ip).to_string();
+        let want_ip = dp.assigned_ip.split('/').next().unwrap_or(&dp.assigned_ip);
+
+        // A peer already on the controller is matched by public key. Leave it untouched
+        // unless its address drifted: a device allocated on the default subnet before the
+        // spark knew its real one gets re-addressed by the control plane, but matching by
+        // key means the controller keeps the stale IP — wrong subnet, can't route — until
+        // the peer is replaced. UniFi's peer API is create/delete only, so re-addressing
+        // is delete-then-create.
+        let is_readdress = match actual_by_pk.get(dp.public_key.as_str()) {
+            Some(existing) => {
+                let have_ip = existing
+                    .interface_ip
+                    .split('/')
+                    .next()
+                    .unwrap_or(&existing.interface_ip);
+                if have_ip == want_ip {
+                    continue; // present and correct
+                }
+                if let Err(e) = unifi.delete_peer(&server.id, existing.id.as_str()).await {
+                    tracing::warn!("re-address {}: deleting the stale peer failed: {e:#}", dp.name);
+                    continue;
+                }
+                true
+            }
+            None => false,
+        };
+
         let new = NewPeer {
             name: peer_name(&dp.name),
-            interface_ip: ip,
+            interface_ip: want_ip.to_string(),
             public_key: dp.public_key.clone(),
             preshared_key: dp.preshared_key.clone(),
             allowed_ips: dp.allowed_ips.clone(),
         };
         match unifi.create_peer(&server.id, &new).await {
-            Ok(()) => created += 1,
+            Ok(()) => {
+                if is_readdress {
+                    readdressed += 1;
+                } else {
+                    created += 1;
+                }
+            }
             // The payload is logged too: a rejected create is almost always a field
             // the controller didn't like, and guessing at it from the outside is how
             // this took several rounds to pin down.
@@ -307,8 +341,8 @@ async fn reconcile(
     // failure stays queued to retry rather than being silently forgotten.
     let clear_deletions = !desired.pending_peer_deletions.is_empty() && all_deletions_ok;
 
-    if created > 0 || deleted > 0 {
-        tracing::info!("reconciled UniFi peers: +{created} -{deleted}");
+    if created > 0 || readdressed > 0 || deleted > 0 {
+        tracing::info!("reconciled UniFi peers: +{created} ~{readdressed} -{deleted}");
     }
 
     // Report actual state.
