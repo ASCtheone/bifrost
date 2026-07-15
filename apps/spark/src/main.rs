@@ -114,7 +114,7 @@ async fn tick(
         }
         *unifi = None;
         *applied = None;
-        heartbeat(control, node_id, node_key, None, &[], false, None).await?;
+        heartbeat(control, node_id, node_key, None, &[], &[], false, None).await?;
         return Ok(());
     };
     *idle_logged = false;
@@ -173,13 +173,13 @@ async fn sync_once(
 ) -> Result<()> {
     match reconcile(unifi, desired).await {
         Ok(o) => {
-            heartbeat(control, node_id, node_key, o.server.as_ref(), &o.peers, o.clear_deletions, None).await
+            heartbeat(control, node_id, node_key, o.server.as_ref(), &o.peers, &o.inventory, o.clear_deletions, None).await
         }
         Err(e) => {
             let msg = format!("{e:#}");
             tracing::warn!("unifi reconcile failed: {msg}");
             // Still report in: online, with the reason, so the dashboard can show it.
-            heartbeat(control, node_id, node_key, None, &[], false, Some(&msg)).await?;
+            heartbeat(control, node_id, node_key, None, &[], &[], false, Some(&msg)).await?;
             Err(e)
         }
     }
@@ -214,10 +214,32 @@ fn peer_name(device_name: &str) -> String {
     }
 }
 
+/// One WireGuard server on the controller together with its peers — the unit of the
+/// full inventory the spark reports so the dashboard can see and manage every server and
+/// client, not just the one bifrost owns.
+struct ServerPeers {
+    server: unifi::WgServer,
+    peers: Vec<unifi::WgPeer>,
+}
+
+/// List every WireGuard server on the controller with its peers. Best-effort per server:
+/// one whose peer list fails still appears (with no peers) rather than dropping the whole
+/// inventory. This is what makes "detect UniFi changes" work — it's reported every cycle.
+async fn gather_inventory(unifi: &mut UnifiClient) -> Vec<ServerPeers> {
+    let mut out = Vec::new();
+    for server in unifi.list_wg_servers().await.unwrap_or_default() {
+        let peers = unifi.list_peers(&server.id).await.unwrap_or_default();
+        out.push(ServerPeers { server, peers });
+    }
+    out
+}
+
 /// The result of one reconcile against the UniFi controller.
 struct ReconcileOutcome {
     server: Option<unifi::WgServer>,
     peers: Vec<unifi::WgPeer>,
+    /// Every WireGuard server on the controller and its peers — reported for the dashboard.
+    inventory: Vec<ServerPeers>,
     /// Whether the control plane's peer-deletion queue was fully drained and should be
     /// cleared. `false` leaves it queued for the next cycle.
     clear_deletions: bool,
@@ -261,7 +283,10 @@ async fn reconcile(
                 tracing::info!(
                     "no spark-owned WireGuard server yet — click \"Create VPN\" in the dashboard; idling"
                 );
-                return Ok(ReconcileOutcome { server: None, peers: Vec::new(), clear_deletions: false });
+                // Still report the full inventory: the dashboard should see every server on
+                // the controller even when the spark owns none.
+                let inventory = gather_inventory(unifi).await;
+                return Ok(ReconcileOutcome { server: None, peers: Vec::new(), inventory, clear_deletions: false });
             }
         }
     };
@@ -371,9 +396,12 @@ async fn reconcile(
         tracing::info!("reconciled UniFi peers: +{created} ~{readdressed} -{deleted}");
     }
 
-    // Report actual state.
+    // Report actual state: the owned server's peers (flat, for the existing
+    // provisioning/repair logic) plus the full inventory of every server and its peers
+    // (for the dashboard). Gathered after any create so a just-made server is included.
     let peers_now = unifi.list_peers(&server.id).await.unwrap_or_default();
-    Ok(ReconcileOutcome { server: Some(server), peers: peers_now, clear_deletions })
+    let inventory = gather_inventory(unifi).await;
+    Ok(ReconcileOutcome { server: Some(server), peers: peers_now, inventory, clear_deletions })
 }
 
 /// `error` is surfaced on the node in the dashboard: a spark that is up but can't
@@ -384,25 +412,37 @@ async fn heartbeat(
     node_key: &str,
     server: Option<&unifi::WgServer>,
     peers: &[unifi::WgPeer],
+    inventory: &[ServerPeers],
     clear_peer_deletions: bool,
     error: Option<&str>,
 ) -> Result<()> {
-    let actual_config = match server {
-        Some(s) => json!({
-            "servers": [{
-                "id": s.id,
-                "name": s.name,
-                "serverAddress": s.server_address,
-                "serverPort": s.server_port,
-                "publicKey": s.public_key,
-            }],
-            "peers": peers.iter().map(|p| json!({
-                "id": p.id, "name": p.name, "ip": p.interface_ip,
-                "publicKey": p.public_key, "enabled": true,
-            })).collect::<Vec<_>>(),
-        }),
-        None => json!({ "servers": [], "peers": [] }),
-    };
+    // actualConfig.servers is the *full* inventory — every WireGuard server on the
+    // controller, each with its peers nested — so the dashboard can show and manage all
+    // of them. actualConfig.peers stays the *owned* server's peers, flat, because the
+    // existing provisioning/repair/display logic reads it.
+    let servers_json: Vec<Value> = inventory
+        .iter()
+        .map(|sp| {
+            json!({
+                "id": sp.server.id,
+                "name": sp.server.name,
+                "serverAddress": sp.server.server_address,
+                "serverPort": sp.server.server_port,
+                "publicKey": sp.server.public_key,
+                "peers": sp.peers.iter().map(|p| json!({
+                    "id": p.id, "name": p.name, "ip": p.interface_ip,
+                    "publicKey": p.public_key, "allowedIps": p.allowed_ips, "enabled": true,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let actual_config = json!({
+        "servers": servers_json,
+        "peers": peers.iter().map(|p| json!({
+            "id": p.id, "name": p.name, "ip": p.interface_ip,
+            "publicKey": p.public_key, "enabled": true,
+        })).collect::<Vec<_>>(),
+    });
 
     let mut body = json!({ "actualConfig": actual_config });
     // Clear "creating on controller" once a server is actually bound. The dashboard sets

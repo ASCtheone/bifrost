@@ -13,6 +13,8 @@ interface VpnServer {
   readonly serverAddress: string;
   readonly serverPort: number;
   readonly publicKey: string;
+  // The server's peers, nested (the spark reports the full inventory per cycle).
+  readonly peers?: readonly VpnPeer[];
 }
 
 interface VpnPeer {
@@ -21,6 +23,7 @@ interface VpnPeer {
   readonly ip: string;
   readonly publicKey: string;
   readonly enabled: boolean;
+  readonly allowedIps?: readonly string[];
 }
 
 interface VpnSnapshot {
@@ -645,20 +648,41 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         </div>
                       }
 
-                      <!-- Other VPN servers (dimmed) -->
+                      <!-- Other VPN servers on this controller (not spark-owned) -->
                       @if (node.actualConfig?.servers?.length) {
                         @for (server of node.actualConfig!.servers; track server.id) {
                           @if (!isSparkServer(node, server)) {
                             <div class="vpn-card dimmed">
                               <div class="vpn-card-header">
                                 <span class="vpn-name">{{ server.name }}</span>
+                                @if (server.peers?.length) {
+                                  <span class="count-badge">{{ server.peers!.length }}</span>
+                                }
                               </div>
                               <div class="vpn-details">
                                 <div class="vpn-detail">
                                   <span class="info-label">Address</span>
                                   <code class="mono-sm">{{ server.serverAddress }}</code>
                                 </div>
+                                <div class="vpn-detail">
+                                  <span class="info-label">Port</span>
+                                  <code class="mono-sm">{{ server.serverPort }}</code>
+                                </div>
                               </div>
+                              @if (server.peers?.length) {
+                                <div class="peer-list compact">
+                                  @for (peer of server.peers!; track peer.id) {
+                                    <div class="peer-row">
+                                      <div class="peer-info">
+                                        <span class="peer-name">{{ peer.name }}</span>
+                                        <code class="mono-sm">{{ peer.ip }}</code>
+                                      </div>
+                                    </div>
+                                  }
+                                </div>
+                              } @else {
+                                <div class="peer-empty">No clients</div>
+                              }
                             </div>
                           }
                         }
@@ -867,7 +891,11 @@ type PanelTab = 'status' | 'config' | 'unifi';
 
     .vpn-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; }
     .vpn-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem 0.85rem; }
-    .vpn-card.dimmed { opacity: 0.35; }
+    .vpn-card.dimmed { background: color-mix(in srgb, var(--text-tertiary) 5%, var(--bg-surface)); }
+    .vpn-card.dimmed .vpn-name { color: var(--text-secondary); }
+    .peer-list.compact { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--border); gap: 0.15rem; }
+    .peer-list.compact .peer-row { padding: 0.15rem 0; }
+    .peer-empty { margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-tertiary); font-style: italic; }
     .vpn-card.spark-vpn { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface)); }
     .spark-vpn-badge { display: flex; align-items: center; gap: 0.4rem; color: var(--accent); }
     .spark-vpn-badge .vpn-name { color: var(--accent); font-weight: 600; }
