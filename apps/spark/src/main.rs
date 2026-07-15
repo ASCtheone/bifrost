@@ -229,15 +229,41 @@ async fn reconcile(
     unifi: &mut UnifiClient,
     desired: &DesiredConfig,
 ) -> Result<ReconcileOutcome> {
-    // Pick the WireGuard server this spark manages.
+    // Select the WireGuard server this spark owns. By id — an exact match on the server
+    // the spark itself created — never a guess among whatever servers happen to exist
+    // (that guess put peers on the wrong VPN instance). The id round-trips: the spark
+    // reports it, the control plane stores it, and it comes back here as `vpn_id`.
     let servers = unifi.list_wg_servers().await?;
-    let server = match &desired.vpn_name {
-        Some(name) => servers.iter().find(|s| &s.name == name).or_else(|| servers.first()),
-        None => servers.first(),
-    };
-    let Some(server) = server.cloned() else {
-        tracing::warn!("no WireGuard server on the UniFi controller yet — create one (server auto-creation not yet automated); reporting empty state");
-        return Ok(ReconcileOutcome { server: None, peers: Vec::new(), clear_deletions: false });
+    let owned = desired
+        .vpn_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|id| servers.iter().find(|s| s.id == id).cloned());
+
+    let server = match owned {
+        Some(s) => s,
+        None => {
+            // No bound server. Create one only when the operator asked (Create VPN);
+            // otherwise idle. We never adopt an existing server by guessing.
+            if desired.pending_vpn_create {
+                let name = desired
+                    .vpn_name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("SPARK VPN");
+                // Idempotent across restarts and a not-yet-round-tripped id: reuse a
+                // server we already created with this name rather than duplicating it.
+                match servers.into_iter().find(|s| s.name == name) {
+                    Some(existing) => existing,
+                    None => unifi.create_wg_server(name).await?,
+                }
+            } else {
+                tracing::info!(
+                    "no spark-owned WireGuard server yet — click \"Create VPN\" in the dashboard; idling"
+                );
+                return Ok(ReconcileOutcome { server: None, peers: Vec::new(), clear_deletions: false });
+            }
+        }
     };
 
     tracing::info!(

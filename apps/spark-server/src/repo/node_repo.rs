@@ -337,9 +337,14 @@ pub async fn set_paused(pool: &SqlitePool, node_id: &str, paused: bool) -> AppRe
 
 /// Flag the node so its spark-agent creates the named VPN out-of-band.
 pub async fn mark_vpn_create(pool: &SqlitePool, node_id: &str, vpn_name: &str) -> AppResult<()> {
+    // Clear spark_vpn_id too: "Create VPN" provisions a *fresh* spark-owned server, so any
+    // previous binding (including a stale one a pre-creation spark reported) must be
+    // dropped — otherwise the spark would select the old server by id instead of creating.
+    // Re-running is safe: the spark dedups by name, so it adopts the server it already
+    // made rather than making a duplicate.
     sqlx::query(
-        "UPDATE nodes SET spark_vpn_name = ?, pending_vpn_create = 1, updated_at = ? \
-         WHERE node_id = ?",
+        "UPDATE nodes SET spark_vpn_name = ?, pending_vpn_create = 1, spark_vpn_id = NULL, \
+         updated_at = ? WHERE node_id = ?",
     )
     .bind(vpn_name)
     .bind(now_iso())

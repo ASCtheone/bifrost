@@ -373,9 +373,9 @@ async fn create_vpn(
             "Spark is offline — bring it online before creating a VPN".into(),
         ));
     }
-    if let Some(name) = node.spark_vpn_name.filter(|s| !s.is_empty()) {
-        return Err(AppError::Conflict(format!("VPN already exists: {name}")));
-    }
+    // Re-runnable on purpose: this unbinds any current server and asks the spark to
+    // provision a fresh one. The spark dedups by name, so re-running adopts the server it
+    // already created rather than piling up duplicates — no "already exists" block needed.
     const VPN_NAME: &str = "SPARK VPN";
     node_repo::mark_vpn_create(&st.pool, &node_id, VPN_NAME).await?;
     Ok(Json(json!({ "success": true, "vpnName": VPN_NAME })))

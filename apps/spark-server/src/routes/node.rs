@@ -96,6 +96,10 @@ async fn desired_config(
 
     Ok(Json(json!({
         "vpnName": node.spark_vpn_name,
+        // The id of the spark-owned server, once created — the spark selects by this.
+        "vpnId": node.spark_vpn_id,
+        // "Create VPN" was clicked and no server is bound yet: the spark creates one.
+        "pendingVpnCreate": node.pending_vpn_create,
         "peers": peers,
         "pendingPeerDeletions": pending,
         "unifi": unifi,

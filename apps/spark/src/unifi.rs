@@ -13,9 +13,18 @@ use crate::config::UnifiConfig;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use serde::Serialize;
 use serde_json::{json, Value};
 use x25519_dalek::{PublicKey, StaticSecret};
+
+/// The subnet range spark-created VPN servers are allocated from — the operator
+/// reserves 10.13.0.0/16 for VPNs. A fresh server gets the first free 10.13.N.0/24.
+const VPN_SUBNET_PREFIX: &str = "10.13";
+/// WireGuard's conventional first listen port; server creation picks the first free
+/// port at or above this.
+const VPN_FIRST_PORT: i64 = 51820;
 
 pub struct UnifiClient {
     http: reqwest::Client,
@@ -250,6 +259,146 @@ impl UnifiClient {
         self.request(reqwest::Method::POST, &path, Some(&payload)).await?;
         Ok(())
     }
+
+    /// Create a WireGuard VPN server on the controller and return its id.
+    ///
+    /// The spark owns the server it creates: it picks a free `10.13.N.0/24` subnet and a
+    /// free port, generates the server keypair, and POSTs a `wireguard-server`
+    /// `networkconf`. The payload is cloned from an existing WireGuard server on this same
+    /// controller when one exists — that guarantees every obscure required field matches
+    /// the firmware, which assembling a payload from field names alone does not — with the
+    /// subnet-derived and DHCP fields stripped so the controller re-derives them for the
+    /// new subnet. On a controller with no server to template from, a minimal payload from
+    /// the documented schema is used. The full payload and any error body are logged.
+    pub async fn create_wg_server(&mut self, name: &str) -> Result<WgServer> {
+        let networks = self.get_rest("/rest/networkconf").await?;
+
+        let used_subnets: Vec<String> = networks
+            .iter()
+            .filter_map(|n| n.get("ip_subnet").and_then(Value::as_str).map(String::from))
+            .collect();
+        let subnet = pick_subnet(&used_subnets)
+            .context("no free 10.13.N.0/24 subnet available for a new VPN server")?;
+
+        let used_ports: Vec<i64> = networks
+            .iter()
+            .filter_map(|n| n.get("local_port").and_then(Value::as_i64))
+            .collect();
+        let port = pick_port(&used_ports);
+
+        let kp = generate_keypair();
+
+        // Prefer cloning an existing WireGuard server as a firmware-safe template.
+        let mut payload = networks
+            .iter()
+            .find(|n| n.get("vpn_type").and_then(Value::as_str) == Some("wireguard-server"))
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "purpose": "remote-user-vpn",
+                    "vpn_type": "wireguard-server",
+                    "wireguard_interface": "wan",
+                    "setting_preference": "manual",
+                })
+            });
+        if let Some(o) = payload.as_object_mut() {
+            // Identifiers and derived/subnet-tied fields must not be carried over.
+            o.retain(|k, _| {
+                !(k.starts_with('_')
+                    || k.starts_with("attr_")
+                    || k.contains("dhcp")
+                    || k == "ip_subnet"
+                    || k == "local_port"
+                    || k == "wireguard_public_key"
+                    || k == "x_wireguard_private_key")
+            });
+            o.insert("name".into(), json!(name));
+            o.insert("purpose".into(), json!("remote-user-vpn"));
+            o.insert("vpn_type".into(), json!("wireguard-server"));
+            o.insert("ip_subnet".into(), json!(subnet));
+            o.insert("local_port".into(), json!(port));
+            o.insert("enabled".into(), json!(true));
+            o.insert("wireguard_public_key".into(), json!(kp.public_key));
+            o.insert("x_wireguard_private_key".into(), json!(kp.private_key));
+        }
+
+        tracing::info!(
+            %name, %subnet, port, "creating WireGuard VPN server on the controller"
+        );
+        let path = format!("{}/rest/networkconf", self.api_path());
+        let created = match self.request(reqwest::Method::POST, &path, Some(&payload)).await {
+            Ok(v) => v,
+            Err(e) => {
+                // The payload is logged (private key redacted) so a rejected create is
+                // diagnosable from the field UniFi objected to, not guessed at.
+                let mut safe = payload.clone();
+                if let Some(o) = safe.as_object_mut() {
+                    o.insert("x_wireguard_private_key".into(), json!("<redacted>"));
+                }
+                tracing::warn!(
+                    payload = %serde_json::to_string(&safe).unwrap_or_default(),
+                    "create WireGuard server failed: {e:#}"
+                );
+                return Err(e);
+            }
+        };
+
+        let id = created
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|o| o.get("_id"))
+            .and_then(Value::as_str)
+            .map(String::from)
+            .context("create WireGuard server: response had no _id")?;
+
+        Ok(WgServer {
+            id,
+            name: name.to_string(),
+            server_address: subnet,
+            server_port: port,
+            public_key: kp.public_key,
+            raw: String::new(),
+        })
+    }
+}
+
+/// A generated WireGuard keypair, base64-encoded (standard WireGuard format).
+struct Keypair {
+    private_key: String,
+    public_key: String,
+}
+
+fn generate_keypair() -> Keypair {
+    let mut sk = [0u8; 32];
+    OsRng.fill_bytes(&mut sk);
+    let secret = StaticSecret::from(sk);
+    let public = PublicKey::from(&secret);
+    Keypair {
+        private_key: STANDARD.encode(secret.to_bytes()),
+        public_key: STANDARD.encode(public.to_bytes()),
+    }
+}
+
+/// The first free `10.13.N.0/24` (returned as gateway `10.13.N.1/24`) whose third octet
+/// isn't already used by an existing network. `used` holds CIDRs like `10.13.4.1/24` or
+/// `192.168.3.1/24`; only the reserved VPN range is considered.
+fn pick_subnet(used: &[String]) -> Option<String> {
+    let taken: std::collections::HashSet<u16> = used
+        .iter()
+        .filter_map(|s| {
+            let net = s.split('/').next().unwrap_or(s);
+            let rest = net.strip_prefix(VPN_SUBNET_PREFIX)?.strip_prefix('.')?;
+            rest.split('.').next()?.parse::<u16>().ok()
+        })
+        .collect();
+    (0..=255).find(|n| !taken.contains(n)).map(|n| format!("{VPN_SUBNET_PREFIX}.{n}.1/24"))
+}
+
+/// The first free port at or above the WireGuard default that no network already uses.
+fn pick_port(used: &[i64]) -> i64 {
+    let taken: std::collections::HashSet<i64> = used.iter().copied().collect();
+    (VPN_FIRST_PORT..=65535).find(|p| !taken.contains(p)).unwrap_or(VPN_FIRST_PORT)
 }
 
 /// Payload for creating a peer on the controller.
@@ -342,6 +491,37 @@ mod tests {
     fn derive_public_key_rejects_malformed_input() {
         assert_eq!(derive_public_key("not base64!!"), None);
         assert_eq!(derive_public_key(&STANDARD.encode([0u8; 16])), None); // wrong length
+    }
+
+    #[test]
+    fn pick_subnet_allocates_from_the_reserved_range() {
+        assert_eq!(pick_subnet(&[]).as_deref(), Some("10.13.0.1/24"));
+        // Existing 10.13.x blocks are skipped; unrelated ranges are ignored.
+        let used = vec![
+            "10.13.0.1/24".into(),
+            "10.13.1.1/24".into(),
+            "192.168.3.1/24".into(),
+        ];
+        assert_eq!(pick_subnet(&used).as_deref(), Some("10.13.2.1/24"));
+        // A non-VPN network on a different range doesn't consume a VPN block.
+        assert_eq!(pick_subnet(&["192.168.8.1/24".into()]).as_deref(), Some("10.13.0.1/24"));
+    }
+
+    #[test]
+    fn pick_port_takes_the_first_free_at_or_above_the_default() {
+        assert_eq!(pick_port(&[]), 51820);
+        assert_eq!(pick_port(&[51820]), 51821);
+        assert_eq!(pick_port(&[51820, 51821, 51999]), 51822);
+        // Ports below the default don't matter.
+        assert_eq!(pick_port(&[443, 51820]), 51821);
+    }
+
+    #[test]
+    fn generated_keypair_round_trips_through_derivation() {
+        // The public key we store on create must be the real public key of the private
+        // key we store — otherwise clients built against it can't handshake.
+        let kp = generate_keypair();
+        assert_eq!(derive_public_key(&kp.private_key).as_deref(), Some(kp.public_key.as_str()));
     }
 
     #[test]

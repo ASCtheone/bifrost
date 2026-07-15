@@ -30,6 +30,14 @@ pub struct DesiredConfig {
     /// Name of the UniFi WireGuard server this spark manages (spark_vpn_name).
     #[serde(default)]
     pub vpn_name: Option<String>,
+    /// The id of the server this spark created and owns, once it has (spark_vpn_id). The
+    /// spark selects its server by this id — an exact match, never a guess among several.
+    #[serde(default)]
+    pub vpn_id: Option<String>,
+    /// The operator asked for a VPN (via "Create VPN") and one isn't bound yet: the spark
+    /// should create its own WireGuard server. Cleared once a server is reported bound.
+    #[serde(default)]
+    pub pending_vpn_create: bool,
     #[serde(default)]
     pub peers: Vec<DesiredPeer>,
     /// UniFi peer ids the control plane has queued for deletion.

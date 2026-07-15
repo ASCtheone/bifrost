@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-spark"
-version = "0.7.10"
+version = "0.8.0"
 edition = "2021"
 description = "Bifrost spark — on-site bridge that provisions the WireGuard server on a UniFi controller to match the Bifrost control plane."
 
@@ -24,3 +24,4 @@ chrono = "0.4"
 # versions the control plane's wg.rs uses, for one WireGuard keying story across apps.
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 base64 = "0.22"
+rand = "0.8"

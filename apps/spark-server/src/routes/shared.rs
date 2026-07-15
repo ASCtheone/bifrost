@@ -29,25 +29,26 @@ pub struct SparkServer {
 /// spark. With zero or several servers reported there is nothing unambiguous to pick.
 pub fn spark_server_for(node: &Node) -> Option<SparkServer> {
     let servers = node.actual_config.as_ref()?.get("servers")?.as_array()?;
-    // Prefer the named server, but fall back to the sole reported server when the name
-    // doesn't match — not only when it's unset. The spark reports exactly one server (the
-    // one it actually provisions against) and its own reconcile uses this same name-then
-    // -first fallback. When `spark_vpn_name` is set to a name no reported server has —
-    // which is the normal state after "Create VPN", since that stores "SPARK VPN" but
-    // server auto-creation isn't implemented, so the spark falls back to an existing
-    // server with a different name — a strict read side would find nothing and the router
-    // would show "No spark available" despite a healthy spark provisioning peers. The one
-    // case still refused is genuine ambiguity: several reported servers, none matching.
-    let named = node
-        .spark_vpn_name
+    // Select by the spark-owned server id — an exact match on the server the spark created
+    // and reports it manages. This is the authoritative binding; the spark selects the
+    // same id on its side, so the two never disagree about which server holds the peers.
+    //
+    // Fallbacks, in order, cover pre-id state: match by name (a dashboard-created VPN),
+    // then the sole reported server (the spark reports exactly one — its own). Genuine
+    // ambiguity — several reported servers, none identified — is refused rather than
+    // guessed, which is what once put peers on the wrong instance.
+    let by_id = node
+        .spark_vpn_id
         .as_deref()
-        .filter(|n| !n.is_empty())
-        .and_then(|name| {
-            servers
-                .iter()
-                .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))
-        });
-    let s = match named {
+        .filter(|id| !id.is_empty())
+        .and_then(|id| servers.iter().find(|s| s.get("id").and_then(|v| v.as_str()) == Some(id)));
+    let by_name = || {
+        node.spark_vpn_name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .and_then(|name| servers.iter().find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name)))
+    };
+    let s = match by_id.or_else(by_name) {
         Some(s) => s,
         None if servers.len() == 1 => &servers[0],
         None => return None,
@@ -278,6 +279,24 @@ mod tests {
             actual_config: Some(SqlxJson(json!({ "servers": servers, "peers": [] }))),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn selects_the_owned_server_by_id_over_name_and_count() {
+        // Two servers reported; the spark-owned id must win, not name or "first".
+        let servers = json!([
+            { "id": "aaa", "name": "SPARK VPN", "publicKey": "WRONG", "serverPort": 51820, "serverAddress": "" },
+            { "id": "bbb", "name": "Miguel VPN APT", "publicKey": "RIGHT", "serverPort": 51821, "serverAddress": "10.13.0.1/24" },
+        ]);
+        let node = Node {
+            spark_vpn_id: Some("bbb".into()),
+            spark_vpn_name: Some("SPARK VPN".into()), // deliberately points at the other one
+            actual_config: Some(SqlxJson(json!({ "servers": servers, "peers": [] }))),
+            ..Default::default()
+        };
+        let s = spark_server_for(&node).expect("should select by id");
+        assert_eq!(s.public_key, "RIGHT");
+        assert_eq!(s.server_address, "10.13.0.1/24");
     }
 
     fn one_server() -> serde_json::Value {
