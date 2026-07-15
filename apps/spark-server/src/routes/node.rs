@@ -178,9 +178,70 @@ async fn heartbeat(
         if let Some(subnet) = reported_server_subnet(&node) {
             repair_device_ips(&st, &node, &subnet).await?;
         }
+        reconcile_device_provisioning(&st, &node).await?;
     }
 
     Ok(Json(json!({ "success": true })))
+}
+
+/// Flip devices to `provisioned` once the spark confirms their WireGuard peer exists.
+///
+/// A device is created `pending`; only the spark can confirm the peer was actually
+/// created on the UniFi controller. Each heartbeat's `actualConfig.peers` is the live
+/// peer set the spark just read back ({id, publicKey, ...}). Matching a device's public
+/// key against that set is the authoritative "the peer exists" signal — peer *names* are
+/// sanitised (see spark `peer_name`) and can collide, the key cannot. Matched devices are
+/// flipped to `provisioned` and stamped with the UniFi peer id.
+///
+/// Promotion only, never demotion: a heartbeat that reports an empty peer set (a UniFi
+/// outage makes the spark report empty rather than fail) must not knock healthy devices
+/// back to `pending`. The explicit path back to `pending` is Sync/`reset_for_resync`.
+async fn reconcile_device_provisioning(st: &AppState, node: &crate::domain::Node) -> AppResult<()> {
+    let Some(peers) = node
+        .actual_config
+        .as_ref()
+        .and_then(|c| c.get("peers"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    // publicKey -> UniFi peer id, for the peers the controller actually has.
+    let by_key: std::collections::HashMap<&str, &str> = peers
+        .iter()
+        .filter_map(|p| {
+            Some((
+                p.get("publicKey").and_then(Value::as_str)?,
+                p.get("id").and_then(Value::as_str)?,
+            ))
+        })
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    if by_key.is_empty() {
+        return Ok(());
+    }
+
+    let owner = node.owner_email.as_str();
+    for d in device_repo::query_all_devices(&st.pool).await? {
+        if d.status == "revoked" || d.public_key.is_empty() {
+            continue;
+        }
+        if !owner.is_empty() && !d.owner_email.is_empty() && d.owner_email != owner {
+            continue;
+        }
+        let Some(&peer_id) = by_key.get(d.public_key.as_str()) else {
+            continue;
+        };
+        // Write only on an actual change, so a steady state doesn't rewrite every
+        // device's `updated_at` on every heartbeat.
+        if d.status != "provisioned" || d.unifi_peer_id.as_deref() != Some(peer_id) {
+            device_repo::update_device_unifi_peer_id(&st.pool, &d.device_id, peer_id).await?;
+            tracing::info!(
+                device = %d.device_id, peer = %peer_id,
+                "device peer confirmed on the controller — marked provisioned"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The WireGuard server subnet this spark manages, taken from what it just reported.
