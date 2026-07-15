@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-spark"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2021"
 description = "Bifrost spark — on-site bridge that provisions the WireGuard server on a UniFi controller to match the Bifrost control plane."
 
@@ -19,3 +19,8 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
+# Derive the WireGuard server's public key from its private key when the controller
+# returns the private key but leaves the public-key field empty. Same crates and
+# versions the control plane's wg.rs uses, for one WireGuard keying story across apps.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+base64 = "0.22"

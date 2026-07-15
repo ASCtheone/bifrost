@@ -237,14 +237,16 @@ async fn reconcile(
         "using UniFi WireGuard server"
     );
     // An empty public key means the control plane will refuse to build device configs
-    // (a peer with no server key can't connect), so the router shows "no spark". If it
-    // reads 0 here, `wireguard_public_key` is the wrong field name for this firmware —
-    // the raw object below shows what the controller actually returned.
+    // (a peer with no server key can't connect), so the router shows "no spark". The key
+    // is read from `wireguard_public_key` and, when that's empty, derived from
+    // `x_wireguard_private_key` (see unifi::server_public_key). Reaching 0 here means the
+    // controller exposed neither on this object — the raw dump below shows exactly which
+    // fields it did return (secret values redacted, names kept) so the gap is visible.
     if server.public_key.is_empty() {
         tracing::warn!(
             raw = %server.raw,
-            "UniFi server has no public key under 'wireguard_public_key' — device configs cannot be built; \
-             this is the field-name mismatch to fix"
+            "UniFi server has no public key and no derivable private key — device configs \
+             cannot be built; the raw object shows which fields the controller returned"
         );
     }
 

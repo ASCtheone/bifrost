@@ -11,8 +11,11 @@
 
 use crate::config::UnifiConfig;
 use anyhow::{anyhow, bail, Context, Result};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 pub struct UnifiClient {
     http: reqwest::Client,
@@ -206,18 +209,20 @@ impl UnifiClient {
                     .unwrap_or_default()
                     .to_string(),
                 server_port: n.get("local_port").and_then(Value::as_i64).unwrap_or(0),
-                public_key: n
-                    .get("wireguard_public_key")
-                    .or_else(|| n.get("x_wireguard_public_key"))
-                    .or_else(|| n.get("public_key"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                public_key: server_public_key(n),
                 raw: {
-                    // Compact, and without private-key-ish fields.
+                    // Redact secret *values*, keep field *names*. A field name leaks
+                    // nothing, and knowing which key fields the controller returned is
+                    // exactly what diagnoses an empty public key. (These fields used to
+                    // be dropped whole, which hid `x_wireguard_private_key` — the very
+                    // field the public-key derivation relies on.)
                     let mut o = n.clone();
                     if let Some(map) = o.as_object_mut() {
-                        map.retain(|k, _| !k.contains("private") && !k.contains("secret"));
+                        for (k, v) in map.iter_mut() {
+                            if k.contains("private") || k.contains("secret") {
+                                *v = Value::String("<redacted>".into());
+                            }
+                        }
                     }
                     serde_json::to_string(&o).unwrap_or_default().chars().take(600).collect::<String>()
                 },
@@ -259,6 +264,40 @@ pub struct NewPeer {
     pub allowed_ips: Vec<String>,
 }
 
+/// The WireGuard server's public key, from a `/rest/networkconf` server object.
+///
+/// UniFi's schema names it `wireguard_public_key` (confirmed against the controller's
+/// own JSON schema), but some firmware returns that field empty in the list response
+/// while still returning the server's private key as `x_wireguard_private_key`. A
+/// WireGuard public key is a pure function of the private key, so when the controller
+/// hands us the private key but not the public one, we derive it rather than depending
+/// on the controller to expose it. Without this the key is empty, the control plane
+/// skips the node, and the router shows "No spark available" for a silent reason.
+fn server_public_key(n: &Value) -> String {
+    let direct = n
+        .get("wireguard_public_key")
+        .or_else(|| n.get("x_wireguard_public_key"))
+        .or_else(|| n.get("public_key"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !direct.is_empty() {
+        return direct.to_string();
+    }
+    n.get("x_wireguard_private_key")
+        .and_then(Value::as_str)
+        .and_then(derive_public_key)
+        .unwrap_or_default()
+}
+
+/// Derive a WireGuard public key from its base64 private key (X25519 public point of
+/// the secret scalar). Returns `None` if the input isn't a valid 32-byte base64 key.
+fn derive_public_key(private_b64: &str) -> Option<String> {
+    let raw = STANDARD.decode(private_b64.trim()).ok()?;
+    let sk: [u8; 32] = raw.try_into().ok()?;
+    let public = PublicKey::from(&StaticSecret::from(sk));
+    Some(STANDARD.encode(public.to_bytes()))
+}
+
 fn parse_peer(u: &Value) -> WgPeer {
     WgPeer {
         id: u.get("_id").and_then(Value::as_str).unwrap_or_default().to_string(),
@@ -271,5 +310,55 @@ fn parse_peer(u: &Value) -> WgPeer {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex32(h: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn derives_public_key_from_rfc7748_vector() {
+        // RFC 7748 §6.1 Alice keypair (raw X25519 scalar / point), stored as WireGuard
+        // stores keys: base64 of the 32 bytes. Independent of our own encode path.
+        let priv_b64 = STANDARD.encode(hex32(
+            "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+        ));
+        let pub_b64 = STANDARD.encode(hex32(
+            "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+        ));
+        assert_eq!(derive_public_key(&priv_b64), Some(pub_b64));
+    }
+
+    #[test]
+    fn derive_public_key_rejects_malformed_input() {
+        assert_eq!(derive_public_key("not base64!!"), None);
+        assert_eq!(derive_public_key(&STANDARD.encode([0u8; 16])), None); // wrong length
+    }
+
+    #[test]
+    fn server_public_key_prefers_direct_then_derives() {
+        // A populated public-key field wins outright — no derivation.
+        assert_eq!(
+            server_public_key(&json!({ "wireguard_public_key": "DIRECT_KEY" })),
+            "DIRECT_KEY"
+        );
+        // Empty public key but a private key present → derived, non-empty.
+        let priv_b64 = STANDARD.encode([7u8; 32]);
+        let derived = server_public_key(&json!({
+            "wireguard_public_key": "",
+            "x_wireguard_private_key": priv_b64,
+        }));
+        assert!(!derived.is_empty());
+        // Neither present → empty (caller treats this as "no key", logs the raw object).
+        assert_eq!(server_public_key(&json!({})), "");
     }
 }
