@@ -608,7 +608,16 @@ type PanelTab = 'status' | 'config' | 'unifi';
                               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                               <span class="vpn-name">{{ node.sparkVpnName }}</span>
                             </div>
-                            <span class="spark-pill">BIFROST</span>
+                            <div class="vpn-card-actions">
+                              <button class="btn-sm secondary"
+                                      (click)="recreateVpn(node)"
+                                      [disabled]="busyNodeId() === node.id || node.status !== 'online'"
+                                      [title]="node.status !== 'online' ? 'The spark must be online to recreate the VPN' : 'Provision a fresh WireGuard server on the controller'">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12" [class.spinning]="busyNodeId() === node.id"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+                                Recreate
+                              </button>
+                              <span class="spark-pill">BIFROST</span>
+                            </div>
                           </div>
                           @if (getSparkServer(node); as sparkServer) {
                             <div class="vpn-details">
@@ -630,6 +639,8 @@ type PanelTab = 'status' | 'config' | 'unifi';
                                 <span class="wait-dot"></span> Waiting for spark to connect...
                               }
                             </div>
+                          } @else if (!getSparkServer(node)) {
+                            <div class="vpn-missing">Server not found on the controller — click Recreate to provision a fresh one.</div>
                           }
                         </div>
                       }
@@ -872,6 +883,8 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .create-tile.disabled:hover { background: transparent; border-color: color-mix(in srgb, var(--text-disabled) 40%, transparent); }
     .create-hint { font-size: 0.65rem; font-weight: 400; color: var(--text-disabled); }
     .vpn-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
+    .vpn-card-actions { display: flex; align-items: center; gap: 0.4rem; }
+    .vpn-missing { margin-top: 0.4rem; font-size: 0.72rem; color: var(--warning); }
     .vpn-name { font-weight: 600; font-size: 0.85rem; color: var(--text-primary); }
     .vpn-port { font-family: monospace; font-size: 0.75rem; color: var(--text-disabled); }
     .vpn-details { display: flex; flex-direction: column; gap: 0.25rem; }
@@ -1314,18 +1327,36 @@ export class NodesPage implements OnInit, OnDestroy {
   }
 
   isSparkServer(node: NodeRow, server: VpnServer): boolean {
+    // Match the spark-owned server by id first (the authoritative binding), then by name
+    // for pre-id state — mirrors the control plane's spark_server_for.
+    if (node.sparkVpnId && server.id === node.sparkVpnId) return true;
     return !!node.sparkVpnName && server.name === node.sparkVpnName;
   }
 
   getSparkServer(node: NodeRow): VpnServer | null {
-    if (!node.sparkVpnName || !node.actualConfig?.servers) return null;
-    return node.actualConfig.servers.find((s) => s.name === node.sparkVpnName) ?? null;
+    const servers = node.actualConfig?.servers;
+    if (!servers) return null;
+    return servers.find((s) => this.isSparkServer(node, s)) ?? null;
   }
 
   async createVpn(nodeId: string): Promise<void> {
     await this.withBusy(nodeId, async () => {
       await this.api.post(`/nodes/${nodeId}/create-vpn`);
     });
+  }
+
+  // Re-provision the spark's VPN server: unbinds the current one and asks the spark to
+  // create a fresh server. Needed when the server was deleted on the controller, or to
+  // recover from a VPN bound to the wrong instance.
+  async recreateVpn(node: NodeRow): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Recreate Spark VPN',
+      message: `Provision a fresh WireGuard server for "${node.name}"? The spark will create a new server; devices re-address onto it automatically. Any peers on the old server are left behind.`,
+      confirmLabel: 'Recreate',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.createVpn(node.id);
   }
 
   async pauseNode(nodeId: string): Promise<void> {
