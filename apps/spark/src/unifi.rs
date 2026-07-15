@@ -264,12 +264,12 @@ impl UnifiClient {
     ///
     /// The spark owns the server it creates: it picks a free `10.13.N.0/24` subnet and a
     /// free port, generates the server keypair, and POSTs a `wireguard-server`
-    /// `networkconf`. The payload is cloned from an existing WireGuard server on this same
-    /// controller when one exists — that guarantees every obscure required field matches
-    /// the firmware, which assembling a payload from field names alone does not — with the
-    /// subnet-derived and DHCP fields stripped so the controller re-derives them for the
-    /// new subnet. On a controller with no server to template from, a minimal payload from
-    /// the documented schema is used. The full payload and any error body are logged.
+    /// `networkconf`. The payload is the exact minimal one verified against a live
+    /// controller — UniFi rejects a create without the keypair
+    /// (`api.err.WireguardMissingPrivateKey`) and assigns `_id`/`wireguard_id`/
+    /// `firewall_zone_id` itself. We deliberately do NOT clone an existing server: that
+    /// copies per-object identifiers (`external_id`, `wireguard_id`) and causes conflicts.
+    /// The full payload (private key redacted) and any error body are logged.
     pub async fn create_wg_server(&mut self, name: &str) -> Result<WgServer> {
         let networks = self.get_rest("/rest/networkconf").await?;
 
@@ -288,39 +288,19 @@ impl UnifiClient {
 
         let kp = generate_keypair();
 
-        // Prefer cloning an existing WireGuard server as a firmware-safe template.
-        let mut payload = networks
-            .iter()
-            .find(|n| n.get("vpn_type").and_then(Value::as_str) == Some("wireguard-server"))
-            .cloned()
-            .unwrap_or_else(|| {
-                json!({
-                    "purpose": "remote-user-vpn",
-                    "vpn_type": "wireguard-server",
-                    "wireguard_interface": "wan",
-                    "setting_preference": "manual",
-                })
-            });
-        if let Some(o) = payload.as_object_mut() {
-            // Identifiers and derived/subnet-tied fields must not be carried over.
-            o.retain(|k, _| {
-                !(k.starts_with('_')
-                    || k.starts_with("attr_")
-                    || k.contains("dhcp")
-                    || k == "ip_subnet"
-                    || k == "local_port"
-                    || k == "wireguard_public_key"
-                    || k == "x_wireguard_private_key")
-            });
-            o.insert("name".into(), json!(name));
-            o.insert("purpose".into(), json!("remote-user-vpn"));
-            o.insert("vpn_type".into(), json!("wireguard-server"));
-            o.insert("ip_subnet".into(), json!(subnet));
-            o.insert("local_port".into(), json!(port));
-            o.insert("enabled".into(), json!(true));
-            o.insert("wireguard_public_key".into(), json!(kp.public_key));
-            o.insert("x_wireguard_private_key".into(), json!(kp.private_key));
-        }
+        let payload = json!({
+            "name": name,
+            "purpose": "remote-user-vpn",
+            "vpn_type": "wireguard-server",
+            "ip_subnet": subnet,
+            "local_port": port,
+            "wireguard_interface": "wan",
+            "wireguard_local_wan_ip": "any",
+            "setting_preference": "auto",
+            "enabled": true,
+            "wireguard_public_key": kp.public_key,
+            "x_wireguard_private_key": kp.private_key,
+        });
 
         tracing::info!(
             %name, %subnet, port, "creating WireGuard VPN server on the controller"
