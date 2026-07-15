@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-spark"
-version = "0.7.7"
+version = "0.7.8"
 edition = "2021"
 description = "Bifrost spark — on-site bridge that provisions the WireGuard server on a UniFi controller to match the Bifrost control plane."
 

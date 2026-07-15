@@ -114,7 +114,7 @@ async fn tick(
         }
         *unifi = None;
         *applied = None;
-        heartbeat(control, node_id, node_key, None, &[], None).await?;
+        heartbeat(control, node_id, node_key, None, &[], false, None).await?;
         return Ok(());
     };
     *idle_logged = false;
@@ -172,14 +172,14 @@ async fn sync_once(
     desired: &DesiredConfig,
 ) -> Result<()> {
     match reconcile(unifi, desired).await {
-        Ok((server, peers)) => {
-            heartbeat(control, node_id, node_key, server.as_ref(), &peers, None).await
+        Ok(o) => {
+            heartbeat(control, node_id, node_key, o.server.as_ref(), &o.peers, o.clear_deletions, None).await
         }
         Err(e) => {
             let msg = format!("{e:#}");
             tracing::warn!("unifi reconcile failed: {msg}");
             // Still report in: online, with the reason, so the dashboard can show it.
-            heartbeat(control, node_id, node_key, None, &[], Some(&msg)).await?;
+            heartbeat(control, node_id, node_key, None, &[], false, Some(&msg)).await?;
             Err(e)
         }
     }
@@ -214,12 +214,21 @@ fn peer_name(device_name: &str) -> String {
     }
 }
 
+/// The result of one reconcile against the UniFi controller.
+struct ReconcileOutcome {
+    server: Option<unifi::WgServer>,
+    peers: Vec<unifi::WgPeer>,
+    /// Whether the control plane's peer-deletion queue was fully drained and should be
+    /// cleared. `false` leaves it queued for the next cycle.
+    clear_deletions: bool,
+}
+
 /// Bring the UniFi WireGuard server's peers in line with the desired config, and
 /// return what's actually there now.
 async fn reconcile(
     unifi: &mut UnifiClient,
     desired: &DesiredConfig,
-) -> Result<(Option<unifi::WgServer>, Vec<unifi::WgPeer>)> {
+) -> Result<ReconcileOutcome> {
     // Pick the WireGuard server this spark manages.
     let servers = unifi.list_wg_servers().await?;
     let server = match &desired.vpn_name {
@@ -228,7 +237,7 @@ async fn reconcile(
     };
     let Some(server) = server.cloned() else {
         tracing::warn!("no WireGuard server on the UniFi controller yet — create one (server auto-creation not yet automated); reporting empty state");
-        return Ok((None, Vec::new()));
+        return Ok(ReconcileOutcome { server: None, peers: Vec::new(), clear_deletions: false });
     };
 
     tracing::info!(
@@ -281,19 +290,30 @@ async fn reconcile(
     }
 
     let mut deleted = 0;
+    let mut all_deletions_ok = true;
     for peer_id in &desired.pending_peer_deletions {
         match unifi.delete_peer(&server.id, peer_id).await {
             Ok(()) => deleted += 1,
-            Err(e) => tracing::warn!("delete peer {peer_id} failed: {e:#}"),
+            Err(e) => {
+                all_deletions_ok = false;
+                tracing::warn!("delete peer {peer_id} failed: {e:#}");
+            }
         }
     }
+    // Tell the control plane to drop the deletion queue once we've drained it, so the
+    // same ids aren't handed back every cycle — that showed up as a perpetual "-N" in the
+    // logs, re-deleting peers that were already gone. Only clear when *every* queued
+    // deletion went through (idempotent no-ops on already-gone peers count): a genuine
+    // failure stays queued to retry rather than being silently forgotten.
+    let clear_deletions = !desired.pending_peer_deletions.is_empty() && all_deletions_ok;
+
     if created > 0 || deleted > 0 {
         tracing::info!("reconciled UniFi peers: +{created} -{deleted}");
     }
 
     // Report actual state.
     let peers_now = unifi.list_peers(&server.id).await.unwrap_or_default();
-    Ok((Some(server), peers_now))
+    Ok(ReconcileOutcome { server: Some(server), peers: peers_now, clear_deletions })
 }
 
 /// `error` is surfaced on the node in the dashboard: a spark that is up but can't
@@ -304,6 +324,7 @@ async fn heartbeat(
     node_key: &str,
     server: Option<&unifi::WgServer>,
     peers: &[unifi::WgPeer],
+    clear_peer_deletions: bool,
     error: Option<&str>,
 ) -> Result<()> {
     let actual_config = match server {
@@ -330,6 +351,11 @@ async fn heartbeat(
     // controller…" forever. Reporting a bound server is proof the work is done.
     if server.is_some() {
         body["pendingVpnCreate"] = json!(false);
+    }
+    // Acknowledge a drained deletion queue so the control plane empties it (it clears the
+    // queue to [] on this flag). Without it the same peer ids are re-sent every cycle.
+    if clear_peer_deletions {
+        body["clearPeerDeletions"] = json!(true);
     }
     // Always present: `null` clears a previous error once the controller recovers.
     body["error"] = match error {
