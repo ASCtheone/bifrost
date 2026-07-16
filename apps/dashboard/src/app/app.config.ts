@@ -9,6 +9,7 @@ import {
   faBolt, faShield, faKey, faQrcode, faLink, faCopy,
   faCircleNotch, faChevronDown, faChevronRight, faBroom, faUsers, faShieldHalved,
   faXmark, faUserPlus, faShareNodes, faTriangleExclamation, faSitemap, faBell,
+  faCloudArrowDown,
 } from '@fortawesome/pro-light-svg-icons';
 
 import { routes } from './app.routes';
@@ -30,6 +31,7 @@ function initIcons(): () => void {
       faBolt, faShield, faKey, faQrcode, faLink, faCopy,
       faCircleNotch, faChevronDown, faChevronRight, faBroom, faUsers, faShieldHalved,
       faXmark, faUserPlus, faShareNodes, faTriangleExclamation, faSitemap, faBell,
+      faCloudArrowDown,
     );
   };
 }

@@ -152,6 +152,10 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
               </a>
               @if (authService.isAdmin()) {
                 <div class="rail-divider"></div>
+                <a routerLink="/updates" routerLinkActive="active" class="rail-item admin-item" title="Update Center">
+                  <fa-icon [icon]="['fal', 'cloud-arrow-down']" [fixedWidth]="true"></fa-icon>
+                  @if (update.count() > 0) { <span class="rail-badge">{{ update.count() }}</span> }
+                </a>
                 <a routerLink="/users" routerLinkActive="active" class="rail-item admin-item" title="Users">
                   <fa-icon [icon]="['fal', 'users']" [fixedWidth]="true"></fa-icon>
                 </a>
@@ -318,9 +322,11 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
       text-decoration: none;
       transition: all 0.15s ease;
     }
+    .rail-item { position: relative; }
     .rail-item fa-icon { font-size: 16px; }
     .rail-item:hover { background: var(--sidebar-hover); color: var(--text-primary); }
     a.rail-item.active { background: var(--accent); color: #fff; }
+    .rail-badge { position: absolute; top: -2px; right: -2px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; line-height: 15px; text-align: center; box-shadow: 0 0 0 2px var(--sidebar-bg); }
     .rail-divider { width: 24px; height: 1px; background: var(--border); margin: 4px 0; }
     .admin-item { color: var(--warning, #f59e0b) !important; }
     a.admin-item.active { background: linear-gradient(135deg, #f59e0b, #ef4444) !important; color: #fff !important; }
@@ -364,6 +370,7 @@ export class App implements OnInit, OnDestroy {
     '/dashboard': 'Dashboard',
     '/sparks': 'Sparks',
     '/devices': 'Devices',
+    '/updates': 'Update Center',
     '/users': 'Users',
     '/admin/sparks': 'All Sparks',
   };
@@ -418,7 +425,7 @@ export class App implements OnInit, OnDestroy {
 
   goToSparks(): void {
     this.notifOpen.set(false);
-    this.router.navigate(['/sparks']);
+    this.router.navigate(['/updates']);
   }
 
   round(n: number): number {

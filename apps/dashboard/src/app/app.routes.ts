@@ -60,6 +60,12 @@ export const routes: Routes = [
           import('./pages/users/users.page').then((m) => m.UsersPage),
       },
       {
+        path: 'updates',
+        canActivate: [adminGuard],
+        loadComponent: () =>
+          import('./pages/updates/updates.page').then((m) => m.UpdatesPage),
+      },
+      {
         path: 'settings',
         loadComponent: () =>
           import('./pages/settings/settings.page').then((m) => m.SettingsPage),
