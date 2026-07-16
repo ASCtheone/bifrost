@@ -231,6 +231,9 @@ async fn auth_provision(
             created_at: now.clone(),
             updated_at: now,
             expires_at: None,
+            client_version: None,
+            pending_action: None,
+            device_backup_available: false,
         };
         device_repo::put_device(&st.pool, &new_device).await?;
         device = Some(new_device);

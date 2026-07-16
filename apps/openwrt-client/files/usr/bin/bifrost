@@ -24,7 +24,11 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.9.13
+BIFROST_VERSION=0.9.14
+# Self-update: a persistent backup + pending marker (STATE_DIR=/tmp is volatile).
+UPDATE_DIR=/etc/bifrost
+BAK="$UPDATE_DIR/bifrost.bak"
+PENDING="$UPDATE_DIR/.update-pending"
 
 mkdir -p "$STATE_DIR"
 
@@ -96,15 +100,55 @@ poll_once() {
 # ── config fetch (by provision token, hard-bound master) ────────
 
 fetch_config() {
-	local token
+	local token backup
 	token=$(cfg_get provision_token)
 	[ -n "$token" ] || { log "not registered yet (no provision token)"; return 1; }
-	if ! curl -fsS --max-time 20 "$(api)/provision/$token" -o "$RESP" 2>/dev/null; then
+	backup=0; [ -f "$BAK" ] && backup=1
+	if ! curl -fsS --max-time 20 \
+		-H "X-Bifrost-Version: $BIFROST_VERSION" \
+		-H "X-Bifrost-Backup: $backup" \
+		"$(api)/provision/$token" -o "$RESP" 2>/dev/null; then
 		log "could not reach master at $(api)"
 		return 1
 	fi
 	jq -e '.nodes' "$RESP" >/dev/null 2>&1 || { log "unexpected provision response"; return 1; }
+	handle_pending_action
 	return 0
+}
+
+# ── remote self-update (opkg + health-gated auto-downgrade) ─────
+
+# Act on a one-shot update/revert instruction the master returned in the provision poll.
+handle_pending_action() {
+	[ -f "$PENDING" ] && return 0   # already applying an update — don't stack another
+	local action latest
+	action=$(jq -r '.pendingAction // empty' "$RESP" 2>/dev/null)
+	latest=$(jq -r '.latestVersion // empty' "$RESP" 2>/dev/null)
+	case "$action" in
+		update) [ -n "$latest" ] && [ "$latest" != "$BIFROST_VERSION" ] && do_update ;;
+		revert) do_revert ;;
+	esac
+}
+
+# Back up the current script, then upgrade via opkg — detached (setsid) so restarting the
+# service mid-upgrade can't kill it. The new version health-gates itself on startup (see
+# the `run` loop) and rolls back if it can't reach the master. Single backup slot; kept
+# after a healthy update so a manual Revert can restore it.
+do_update() {
+	mkdir -p "$UPDATE_DIR"
+	cp /usr/bin/bifrost "$BAK" 2>/dev/null || { log "self-update: could not back up current version"; return 1; }
+	touch "$PENDING"
+	log "self-update: upgrading via opkg (detached)"
+	setsid sh -c 'sleep 2; opkg update && opkg upgrade bifrost && /etc/init.d/bifrost restart' \
+		>/tmp/bifrost-update.log 2>&1 &
+}
+
+# Restore the backup script and drop it, then restart into it.
+do_revert() {
+	[ -f "$BAK" ] || { log "revert: no backup to restore"; return 1; }
+	log "revert: restoring the previous version"
+	setsid sh -c "sleep 1; cp '$BAK' /usr/bin/bifrost && rm -f '$BAK' '$PENDING' && /etc/init.d/bifrost restart" \
+		>/tmp/bifrost-update.log 2>&1 &
 }
 
 # ── WireGuard .conf parsing + apply (uci netifd) ────────────────
@@ -608,6 +652,9 @@ case "${1:-}" in
 	# Pull the latest config from the master without touching the tunnel — the web UI
 	# calls this to show dashboard changes (new sparks) live without reconnecting.
 	fetch) fetch_config ;;
+	# Manual triggers (the dashboard normally drives these via the provision poll).
+	self-update) do_update ;;
+	self-revert) do_revert ;;
 	killswitch) apply_killswitch ;;
 	up) cmd_up ;;
 	down) cmd_down ;;
@@ -618,6 +665,29 @@ case "${1:-}" in
 	ui-check) cmd_ui_check ;;
 	ui-url) ui_url ;;
 	run)
+		# Health-gate a pending self-update: this (new) version must reach the master
+		# within the window, or we roll back to the backup and re-exec it. A totally
+		# broken new build that won't run at all can't self-heal here — procd just
+		# respawns it — but the opkg install + checksums make that unlikely, and we
+		# control releases.
+		if [ -f "$PENDING" ]; then
+			log "self-update pending — health-gating the new version"
+			ok=0; i=0
+			while [ "$i" -lt 12 ]; do   # ~60s to prove it can reach the master
+				fetch_config >/dev/null 2>&1 && { ok=1; break; }
+				i=$((i + 1)); sleep 5
+			done
+			if [ "$ok" = "1" ]; then
+				rm -f "$PENDING"   # commit; keep the backup for a manual Revert
+				log "self-update healthy — committed"
+			else
+				log "self-update failed its health check — rolling back to the backup"
+				[ -f "$BAK" ] && cp "$BAK" /usr/bin/bifrost
+				rm -f "$BAK" "$PENDING"
+				exec /usr/bin/bifrost run   # re-exec the restored version
+			fi
+		fi
+
 		# Reactive daemon: always running, re-reads uci each 5s tick and acts on
 		# it, so the web UI only edits config and never restarts procd. Config is
 		# re-fetched from the master (and return-to-primary attempted) every

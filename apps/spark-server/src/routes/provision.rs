@@ -7,6 +7,7 @@ use crate::routes::shared;
 use crate::state::AppState;
 use crate::util;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
 
@@ -67,7 +68,11 @@ async fn wg_conf(
         .into_response())
 }
 
-async fn provision(State(st): State<AppState>, Path(token): Path<String>) -> AppResult<Json<Value>> {
+async fn provision(
+    State(st): State<AppState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+) -> AppResult<Json<Value>> {
     if token.is_empty() {
         return Err(AppError::BadRequest("Missing provision token".into()));
     }
@@ -78,6 +83,17 @@ async fn provision(State(st): State<AppState>, Path(token): Path<String>) -> App
         return Err(AppError::Forbidden("Device has been revoked".into()));
     }
     ensure_not_expired(&device)?;
+
+    // The router reports its version + whether it holds a rollback backup on each poll.
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    if let Some(v) = header("x-bifrost-version").filter(|s| !s.is_empty()) {
+        let backup = header("x-bifrost-backup") == Some("1");
+        device_repo::update_client_report(&st.pool, &device.device_id, v, backup).await?;
+    }
+    // One-shot self-update instruction (set by the dashboard's Update/Revert), cleared as
+    // it's handed over so a missed poll doesn't loop.
+    let pending_action = device_repo::take_pending_action(&st.pool, &device.device_id).await?;
+    let latest = st.latest_version.read().map(|g| g.clone()).unwrap_or_default();
 
     let all_nodes = node_repo::query_all_nodes(&st.pool).await?;
     let configs = shared::build_device_configs(&device, &all_nodes);
@@ -109,5 +125,8 @@ async fn provision(State(st): State<AppState>, Path(token): Path<String>) -> App
         "assignedIp": device.assigned_ip,
         "nodes": nodes,
         "config": primary,
+        // Router self-update: the latest published version + a one-shot action to run.
+        "latestVersion": latest,
+        "pendingAction": pending_action,
     })))
 }

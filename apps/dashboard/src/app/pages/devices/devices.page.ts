@@ -23,6 +23,12 @@ interface DeviceRow {
   readonly lastSeen: string | null;
   readonly createdAt: string;
   readonly expiresAt: string | null;
+  // Router client self-update.
+  readonly clientVersion?: string | null;
+  readonly latestVersion?: string;
+  readonly updateAvailable?: boolean;
+  readonly backupAvailable?: boolean;
+  readonly pendingAction?: string | null;
 }
 
 interface DevicesResponse {
@@ -198,7 +204,22 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
             <div class="device-meta">
               <span class="device-type">{{ device.type }}</span>
               <span class="device-status-pill" [attr.data-status]="device.status">{{ device.status }}</span>
+              @if (device.clientVersion) { <span class="device-version">v{{ device.clientVersion }}</span> }
             </div>
+            @if (device.clientVersion) {
+              <div class="device-update">
+                @if (updatingDevice()[device.id]; as stage) {
+                  <span class="device-update-progress"><span class="spinner-sm"></span> {{ stage }}</span>
+                } @else {
+                  @if (device.updateAvailable && isAdmin()) {
+                    <button class="device-update-btn" (click)="updateDevice(device)">Update to v{{ device.latestVersion }}</button>
+                  }
+                  @if (device.backupAvailable && isAdmin()) {
+                    <button class="device-revert-btn" (click)="revertDevice(device)">Revert</button>
+                  }
+                }
+              </div>
+            }
           </div>
           @if (isSuperadmin()) {
             <div class="device-owner">
@@ -293,6 +314,12 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
     .device-ip { display: inline-block; padding: 2px 8px; border-radius: 6px; background: var(--bg-input); font-size: 0.75rem; font-family: monospace; color: var(--text-secondary); margin-bottom: 0.25rem; }
     .device-meta { display: flex; align-items: center; gap: 0.4rem; }
     .device-type { font-size: 0.65rem; color: var(--text-disabled); text-transform: uppercase; letter-spacing: 0.3px; font-weight: 500; }
+    .device-version { font-size: 0.6rem; color: var(--text-disabled); font-family: ui-monospace, monospace; }
+    .device-update { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.4rem; }
+    .device-update-btn { padding: 2px 9px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-size: 0.6rem; font-weight: 600; cursor: pointer; }
+    .device-update-btn:hover { filter: brightness(1.08); }
+    .device-revert-btn { padding: 2px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-secondary); font-size: 0.6rem; font-weight: 600; cursor: pointer; }
+    .device-update-progress { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.6rem; font-weight: 600; color: var(--accent); }
     .device-status-pill { font-size: 0.55rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 6px; border-radius: 6px; }
     .device-status-pill[data-status="pending"] { background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent); color: var(--warning, #f59e0b); }
     .device-status-pill[data-status="provisioned"] { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
@@ -481,6 +508,75 @@ export class DevicesPage implements OnInit {
 
   isSuperadmin(): boolean {
     return this.auth.isSuperadmin();
+  }
+
+  isAdmin(): boolean {
+    return this.auth.isAdmin();
+  }
+
+  // ── Router client remote update / revert ─────────────────────────
+  // Applied by the router on its next /provision poll (~5 min by default), so we poll the
+  // device list and surface the stage until its reported version catches up.
+  updatingDevice = signal<Record<string, string>>({});
+
+  private setDeviceUpdating(id: string, stage: string | null): void {
+    this.updatingDevice.update((m) => {
+      const next = { ...m };
+      if (stage === null) delete next[id];
+      else next[id] = stage;
+      return next;
+    });
+  }
+
+  async updateDevice(device: DeviceRow): Promise<void> {
+    const target = device.latestVersion ?? '';
+    this.setDeviceUpdating(device.id, 'Waiting for the router to pick it up…');
+    try {
+      await this.api.post(`/devices/${device.id}/update`);
+    } catch {
+      this.setDeviceUpdating(device.id, null);
+      return;
+    }
+    this.pollDeviceUpdate(device.id, device.clientVersion ?? '', target);
+  }
+
+  async revertDevice(device: DeviceRow): Promise<void> {
+    const from = device.clientVersion ?? '';
+    this.setDeviceUpdating(device.id, 'Reverting on next poll…');
+    try {
+      await this.api.post(`/devices/${device.id}/revert`);
+    } catch {
+      this.setDeviceUpdating(device.id, null);
+      return;
+    }
+    this.pollDeviceUpdate(device.id, from, '');
+  }
+
+  private pollDeviceUpdate(id: string, fromVersion: string, target: string): void {
+    const startedAt = Date.now();
+    const timer = setInterval(async () => {
+      await this.fetchDevices();
+      const d = this.devices().find((x) => x.id === id);
+      if (!d) {
+        clearInterval(timer);
+        this.setDeviceUpdating(id, null);
+        return;
+      }
+      const changed = (d.clientVersion ?? '') !== fromVersion;
+      const reachedTarget = target ? d.clientVersion === target : changed;
+      if (reachedTarget || (changed && !d.updateAvailable)) {
+        clearInterval(timer);
+        this.setDeviceUpdating(id, null);
+        return;
+      }
+      // Routers poll slowly (default 5 min) — allow up to 10 min before giving up.
+      if (Date.now() - startedAt > 10 * 60 * 1000) {
+        clearInterval(timer);
+        this.setDeviceUpdating(id, null);
+        return;
+      }
+      this.setDeviceUpdating(id, d.pendingAction ? 'Queued — waiting for the router…' : 'Installing on the router…');
+    }, 8000);
   }
 
   async showDeviceAssign(deviceId: string): Promise<void> {

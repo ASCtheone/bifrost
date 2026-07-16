@@ -263,6 +263,9 @@ pub async fn create_device_for_owner(
         created_at: now.clone(),
         updated_at: now,
         expires_at,
+        client_version: None,
+        pending_action: None,
+        device_backup_available: false,
     };
     device_repo::put_device(pool, &device).await?;
     Ok(device)

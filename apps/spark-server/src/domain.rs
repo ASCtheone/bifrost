@@ -148,6 +148,16 @@ pub struct Device {
     /// the device is treated as expired and provisioning is refused.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// The router client's self-reported version (from its /provision poll).
+    #[serde(default)]
+    pub client_version: Option<String>,
+    /// One-shot self-update instruction for the router: 'update' | 'revert'. Cleared as
+    /// the provision handler returns it (see migration 0011).
+    #[serde(default)]
+    pub pending_action: Option<String>,
+    /// Whether the router has a rollback backup staged (drives its Revert button).
+    #[serde(default)]
+    pub device_backup_available: bool,
 }
 
 // ── Peer (WireGuard peer) ────────────────────────────────────────

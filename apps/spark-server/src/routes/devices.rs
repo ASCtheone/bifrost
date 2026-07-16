@@ -19,6 +19,9 @@ pub fn routes() -> Router<AppState> {
         .route("/devices", get(list_devices).post(create_device))
         .route("/devices/:deviceId", axum::routing::put(update_device).delete(delete_device))
         .route("/devices/:deviceId/sync", post(sync_device))
+        // Router client remote update/revert (applied by the router on its next poll).
+        .route("/devices/:deviceId/update", post(update_device_client))
+        .route("/devices/:deviceId/revert", post(revert_device_client))
         .route("/devices/:deviceId/config", get(get_device_config))
         .route("/devices/:deviceId/logs", get(get_logs).post(post_log))
 }
@@ -28,6 +31,7 @@ pub fn routes() -> Router<AppState> {
 async fn list_devices(State(st): State<AppState>, AdminAuth(auth): AdminAuth) -> AppResult<Json<Value>> {
     let devices = device_repo::query_all_devices(&st.pool).await?;
     let is_super = auth.is_superadmin();
+    let latest = st.latest_version.read().map(|g| g.clone()).unwrap_or_default();
     let list: Vec<Value> = devices
         .into_iter()
         .filter(|d| is_super || d.owner_email == auth.email)
@@ -46,6 +50,12 @@ async fn list_devices(State(st): State<AppState>, AdminAuth(auth): AdminAuth) ->
                 "lastSeen": d.last_seen,
                 "createdAt": d.created_at,
                 "expiresAt": d.expires_at,
+                // Router client version + self-update state.
+                "clientVersion": d.client_version,
+                "latestVersion": latest,
+                "updateAvailable": d.client_version.as_deref().map_or(false, |v| crate::release::version_lt(v, &latest)),
+                "backupAvailable": d.device_backup_available,
+                "pendingAction": d.pending_action,
             })
         })
         .collect();
@@ -127,6 +137,9 @@ async fn create_device(
         created_at: now.clone(),
         updated_at: now,
         expires_at: None,
+        client_version: None,
+        pending_action: None,
+        device_backup_available: false,
     };
     device_repo::put_device(&st.pool, &device).await?;
 
@@ -220,6 +233,32 @@ async fn sync_device(
         .ok_or_else(|| AppError::NotFound("Device not found".into()))?;
     device_repo::reset_for_resync(&st.pool, &device_id).await?;
     Ok(Json(json!({ "success": true })))
+}
+
+// ── Router client remote update / revert ────────────────────────
+
+async fn update_device_client(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(device_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    device_repo::get_device(&st.pool, &device_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Device not found".into()))?;
+    device_repo::set_pending_action(&st.pool, &device_id, "update").await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn revert_device_client(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(device_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    device_repo::get_device(&st.pool, &device_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Device not found".into()))?;
+    device_repo::set_pending_action(&st.pool, &device_id, "revert").await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 // ── GET /devices/{deviceId}/config ──────────────────────────────

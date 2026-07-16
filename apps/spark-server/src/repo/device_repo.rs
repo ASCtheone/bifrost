@@ -173,3 +173,58 @@ pub async fn update_device_ip(
         .await?;
     Ok(())
 }
+
+// ── Router client self-update ────────────────────────────────────
+
+/// Record the router client's reported version + whether it has a rollback backup, from
+/// its /provision poll. Also bumps last_seen, since the poll is its liveness signal.
+pub async fn update_client_report(
+    pool: &SqlitePool,
+    device_id: &str,
+    version: &str,
+    backup: bool,
+) -> AppResult<()> {
+    let now = now_iso();
+    sqlx::query(
+        "UPDATE devices SET client_version = ?, device_backup_available = ?, last_seen = ?, \
+         updated_at = ? WHERE device_id = ?",
+    )
+    .bind(version)
+    .bind(backup)
+    .bind(&now)
+    .bind(&now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Queue a one-shot self-update action ('update' | 'revert') for the router.
+pub async fn set_pending_action(pool: &SqlitePool, device_id: &str, action: &str) -> AppResult<()> {
+    sqlx::query("UPDATE devices SET pending_action = ?, updated_at = ? WHERE device_id = ?")
+        .bind(action)
+        .bind(now_iso())
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Read and clear the pending action (fire-once) — so a missed poll just needs another
+/// click rather than looping a failing update.
+pub async fn take_pending_action(pool: &SqlitePool, device_id: &str) -> AppResult<Option<String>> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT pending_action FROM devices WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_optional(pool)
+            .await?;
+    let action = row.and_then(|(a,)| a).filter(|s| !s.is_empty());
+    if action.is_some() {
+        sqlx::query("UPDATE devices SET pending_action = NULL, updated_at = ? WHERE device_id = ?")
+            .bind(now_iso())
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(action)
+}
