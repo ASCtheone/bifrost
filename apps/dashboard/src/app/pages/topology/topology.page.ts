@@ -123,6 +123,42 @@ const X_GAP = 175;
                 <button class="icon-btn" (click)="clearSelection()" title="Close"><fa-icon [icon]="['fal', 'xmark']" [fixedWidth]="true"></fa-icon></button>
               </div>
               <div class="detail-kind">{{ kindLabel(sel.kind) }}</div>
+
+              @if (hasQuick(sel)) {
+                <div class="quickbar">
+                  @if (sel.kind === 'spark' && asSpark(sel); as s) {
+                    <button class="qbtn" (click)="togglePause(s)" [disabled]="busy()" [title]="s.paused ? 'Resume' : 'Pause'">
+                      <fa-icon [icon]="['fal', s.paused ? 'circle-check' : 'ban']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                    <button class="qbtn" (click)="createVpn(s)" [disabled]="busy()" [title]="s.status === 'online' ? 'Recreate VPN' : 'Create VPN'">
+                      <fa-icon [icon]="['fal', 'bolt']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                    <button class="qbtn danger" (click)="deleteSpark(s)" [disabled]="busy()" title="Delete spark">
+                      <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                  }
+                  @if (sel.kind === 'device' && asDevice(sel); as d) {
+                    <button class="qbtn" (click)="toggleDevice(d)" [disabled]="busy()" [title]="d.enabled ? 'Disable' : 'Enable'">
+                      <fa-icon [icon]="['fal', d.enabled ? 'ban' : 'circle-check']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                    <button class="qbtn" (click)="syncDevice(d)" [disabled]="busy()" title="Sync to sparks">
+                      <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                    <button class="qbtn danger" (click)="deleteDevice(d)" [disabled]="busy()" title="Delete device">
+                      <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                  }
+                  @if (sel.kind === 'user' && asUser(sel); as u) {
+                    <button class="qbtn" (click)="toggleUser(u)" [disabled]="busy()" [title]="u.enabled ? 'Disable' : 'Enable'">
+                      <fa-icon [icon]="['fal', u.enabled ? 'ban' : 'circle-check']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                    <button class="qbtn danger" (click)="deleteUser(u)" [disabled]="busy()" title="Delete user">
+                      <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
+                    </button>
+                  }
+                </div>
+              }
+
               <div class="detail-body">
                 @for (row of detailRows(sel); track row.label) {
                   <div class="drow">
@@ -223,6 +259,12 @@ const X_GAP = 175;
     .detail-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; overflow: hidden; }
     .detail-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .detail-kind { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); margin: 0.15rem 0 0.9rem; }
+    .quickbar { display: flex; gap: 0.4rem; margin: 0 0 1rem; padding-bottom: 0.9rem; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+    .qbtn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text-secondary); cursor: pointer; transition: all 0.15s ease; }
+    .qbtn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+    .qbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .qbtn.danger { color: var(--danger, #ef4444); border-color: color-mix(in srgb, var(--danger, #ef4444) 35%, transparent); }
+    .qbtn.danger:hover { background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent); }
     .drow { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
     .dlabel { font-size: 0.72rem; color: var(--text-tertiary); }
     .dvalue { font-size: 0.75rem; color: var(--text-primary); text-align: right; word-break: break-word; }
@@ -454,6 +496,14 @@ export class TopologyPage implements OnInit {
   }
   canManageUser(u: TUser): boolean {
     return this.auth.isSuperadmin() && !u.isSelf && !!u.username;
+  }
+
+  // Whether the selected node has any quick actions the viewer may perform.
+  hasQuick(n: GraphNode): boolean {
+    if (n.kind === 'spark') return this.canManageSpark(this.asSpark(n));
+    if (n.kind === 'device') return this.canManageDevice(this.asDevice(n));
+    if (n.kind === 'user') return this.canManageUser(this.asUser(n));
+    return false;
   }
 
   // ── Actions ──────────────────────────────────────────────────────
