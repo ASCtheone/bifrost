@@ -104,16 +104,52 @@ export class UpdateService {
     this.checking.set(false);
   }
 
+  // Shared, server-side "an update is in progress" state — so EVERY client (not just the
+  // one that clicked Update) shows the blocking overlay for the whole recreate window.
+  readonly serverUpdating = signal(false);
+  readonly serverUpdateTarget = signal<string | null>(null);
+  private statusTimer: ReturnType<typeof setInterval> | null = null;
+  private wasServerUpdating = false;
+
+  private async pollStatus(): Promise<void> {
+    try {
+      const s = await this.api.get<{ updating: boolean; target?: string }>('/update-status');
+      if (s.updating) {
+        this.serverUpdateTarget.set(s.target ?? null);
+        this.serverUpdating.set(true);
+        this.wasServerUpdating = true;
+      } else if (this.wasServerUpdating) {
+        // The update we were watching finished — reload onto the new version.
+        this.wasServerUpdating = false;
+        this.serverUpdating.set(false);
+        window.location.reload();
+      } else {
+        this.serverUpdating.set(false);
+      }
+    } catch {
+      // API unreachable: if an update was underway, this is the recreate window — keep
+      // blocking until it answers again (then the branch above reloads us).
+      if (this.wasServerUpdating) this.serverUpdating.set(true);
+    }
+  }
+
   start(): void {
     if (this.timer) return;
     void this.refresh();
     this.timer = setInterval(() => void this.refresh(), 5 * 60 * 1000);
+    // Fast, lightweight poll so the blocking overlay appears/clears promptly for everyone.
+    void this.pollStatus();
+    this.statusTimer = setInterval(() => void this.pollStatus(), 4000);
   }
 
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.statusTimer) {
+      clearInterval(this.statusTimer);
+      this.statusTimer = null;
     }
   }
 

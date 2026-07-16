@@ -12,18 +12,25 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
   imports: [RouterOutlet, RouterLink, RouterLinkActive, FaIconComponent],
   template: `
     @if (loggedIn()) {
-      <!-- Full-screen, interaction-blocking update overlay -->
-      @if (update.updating()) {
+      <!-- Full-screen, interaction-blocking update overlay. Shown to EVERY client for the
+           whole control-plane update — the initiator (local progress) and anyone else who
+           arrives (server-reported), so nobody operates the UI mid-recreate. -->
+      @if (update.updating() || update.serverUpdating()) {
         <div class="update-overlay">
           <div class="update-overlay-inner">
             <img src="logo.png" class="update-overlay-logo" alt="Bifrost" />
             <h2 class="update-overlay-title">Updating the dashboard…</h2>
             <p class="update-overlay-msg">
-              The control plane is being updated@if (update.dashboard()?.latest) { to v{{ update.dashboard()!.latest }}}. This page will
+              The control plane is being updated@if (updateTarget()) { to v{{ updateTarget() }}}. This page will
               reload automatically when it's back — please don't close this tab.
             </p>
-            <div class="update-overlay-bar"><div class="update-overlay-fill" [style.width.%]="update.progress()"></div></div>
-            <div class="update-overlay-pct">{{ round(update.progress()) }}%</div>
+            @if (update.updating()) {
+              <div class="update-overlay-bar"><div class="update-overlay-fill" [style.width.%]="update.progress()"></div></div>
+              <div class="update-overlay-pct">{{ round(update.progress()) }}%</div>
+            } @else {
+              <div class="update-overlay-bar"><div class="update-overlay-fill indeterminate"></div></div>
+              <div class="update-overlay-pct">Update in progress…</div>
+            }
           </div>
         </div>
       }
@@ -234,6 +241,9 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
     .update-overlay-msg { margin: 0 0 1.4rem; font-size: 0.82rem; line-height: 1.5; color: var(--text-secondary); }
     .update-overlay-bar { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 20%, transparent); overflow: hidden; }
     .update-overlay-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+    /* Non-initiator clients don't have a real % — show a moving indeterminate bar. */
+    .update-overlay-fill.indeterminate { width: 35%; border-radius: 4px; animation: indet 1.3s ease-in-out infinite; }
+    @keyframes indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
     .update-overlay-pct { margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
     .notif-menu { position: relative; }
     .notif-badge { position: absolute; top: -2px; right: -2px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
@@ -430,6 +440,12 @@ export class App implements OnInit, OnDestroy {
 
   round(n: number): number {
     return Math.round(n);
+  }
+
+  // The version being updated to, from the server marker (any client) or, for the
+  // initiator, the locally-known latest.
+  updateTarget(): string | null {
+    return this.update.serverUpdateTarget() ?? this.update.dashboard()?.latest ?? null;
   }
 
   private setUserInfo(email: string): void {

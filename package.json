@@ -1,6 +1,6 @@
 {
   "name": "bifrost-monorepo",
-  "version": "0.9.24",
+  "version": "0.9.25",
   "private": true,
   "workspaces": [
     "apps/*"
