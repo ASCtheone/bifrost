@@ -38,6 +38,10 @@ pub struct DesiredConfig {
     /// should create its own WireGuard server. Cleared once a server is reported bound.
     #[serde(default)]
     pub pending_vpn_create: bool,
+    /// Operator pause. When true the spark disables its WireGuard server on the controller
+    /// so clients disconnect; resuming re-enables it. Kept in sync every cycle.
+    #[serde(default)]
+    pub paused: bool,
     #[serde(default)]
     pub peers: Vec<DesiredPeer>,
     /// UniFi peer ids the control plane has queued for deletion.

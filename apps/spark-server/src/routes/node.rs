@@ -108,6 +108,8 @@ async fn desired_config(
         "vpnId": node.spark_vpn_id,
         // "Create VPN" was clicked and no server is bound yet: the spark creates one.
         "pendingVpnCreate": node.pending_vpn_create,
+        // Operator pause: the spark disables its WireGuard server so clients disconnect.
+        "paused": node.paused,
         "peers": peers,
         "pendingPeerDeletions": pending,
         "commands": commands,

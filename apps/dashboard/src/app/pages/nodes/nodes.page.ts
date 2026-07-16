@@ -13,6 +13,8 @@ interface VpnServer {
   readonly serverAddress: string;
   readonly serverPort: number;
   readonly publicKey: string;
+  // False when disabled on the controller — e.g. because the spark is paused.
+  readonly enabled?: boolean;
   // The server's peers, nested (the spark reports the full inventory per cycle).
   readonly peers?: readonly VpnPeer[];
 }
@@ -635,6 +637,9 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             <div class="spark-vpn-badge">
                               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                               <span class="vpn-name">{{ node.sparkVpnName }}</span>
+                              @if (getSparkServer(node)?.enabled === false) {
+                                <span class="disabled-pill">Paused</span>
+                              }
                             </div>
                             <div class="vpn-card-actions">
                               <button class="btn-sm secondary"
@@ -680,6 +685,9 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             <div class="vpn-card dimmed" (contextmenu)="openServerMenu($event, node, server)">
                               <div class="vpn-card-header">
                                 <span class="vpn-name">{{ server.name }}</span>
+                                @if (server.enabled === false) {
+                                  <span class="disabled-pill">Disabled</span>
+                                }
                                 <div class="vpn-card-actions">
                                   @if (server.peers?.length) {
                                     <span class="count-badge">{{ server.peers!.length }}</span>
@@ -982,6 +990,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .config-body { margin: 0; padding: 0.5rem 0.6rem; background: var(--bg-base, var(--bg-surface)); border-radius: 6px; font-size: 0.68rem; line-height: 1.5; overflow-x: auto; white-space: pre; color: var(--text-secondary); }
     .config-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
     .freshness { font-size: 0.66rem; color: var(--text-tertiary); }
+    .disabled-pill { display: inline-block; padding: 1px 7px; border-radius: 8px; font-size: 0.55rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; background: color-mix(in srgb, var(--warning, #f59e0b) 18%, transparent); color: var(--warning, #f59e0b); }
     .ctx-backdrop { position: fixed; inset: 0; z-index: 1000; }
     .ctx-menu { position: fixed; z-index: 1001; min-width: 150px; padding: 0.25rem; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); display: flex; flex-direction: column; }
     .ctx-item { display: block; width: 100%; text-align: left; padding: 0.4rem 0.6rem; background: transparent; border: none; border-radius: 5px; color: var(--text-primary); font-size: 0.78rem; cursor: pointer; }

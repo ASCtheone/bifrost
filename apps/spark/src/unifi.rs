@@ -44,6 +44,9 @@ pub struct WgServer {
     pub server_address: String,
     pub server_port: i64,
     pub public_key: String,
+    /// Whether the server is enabled on the controller. The spark keeps this in sync with
+    /// the spark's pause state — a paused spark disables its server so clients disconnect.
+    pub enabled: bool,
     /// The raw controller object, compacted — logged when a field (e.g. the public
     /// key) comes back empty, so a firmware naming difference is diagnosable from the
     /// log instead of guessed at.
@@ -219,6 +222,7 @@ impl UnifiClient {
                     .to_string(),
                 server_port: n.get("local_port").and_then(Value::as_i64).unwrap_or(0),
                 public_key: server_public_key(n),
+                enabled: n.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                 raw: {
                     // Redact secret *values*, keep field *names*. A field name leaks
                     // nothing, and knowing which key fields the controller returned is
@@ -353,6 +357,7 @@ impl UnifiClient {
             server_address: subnet,
             server_port: port,
             public_key: kp.public_key,
+            enabled: true,
             raw: String::new(),
         })
     }

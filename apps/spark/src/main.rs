@@ -441,6 +441,18 @@ async fn reconcile(
         );
     }
 
+    // Keep the server's enabled state in sync with the spark's pause. A paused spark
+    // disables its WireGuard server so clients disconnect; resuming re-enables it. Only
+    // written on a mismatch, and re-asserted every cycle — so flipping it back on in the
+    // UniFi console while the spark is paused is undone on the next reconcile.
+    let want_enabled = !desired.paused;
+    if server.enabled != want_enabled {
+        tracing::info!(id = %server.id, want_enabled, "syncing WireGuard server enabled to spark pause state");
+        if let Err(e) = unifi.update_wg_server(&server.id, None, None, Some(want_enabled)).await {
+            tracing::warn!("failed to set server enabled={want_enabled}: {e:#}");
+        }
+    }
+
     // Reconcile peers.
     let actual = unifi.list_peers(&server.id).await?;
     let actual_by_pk: HashMap<&str, &unifi::WgPeer> =
@@ -561,6 +573,7 @@ async fn heartbeat(
                 "serverAddress": sp.server.server_address,
                 "serverPort": sp.server.server_port,
                 "publicKey": sp.server.public_key,
+                "enabled": sp.server.enabled,
                 "peers": sp.peers.iter().map(|p| json!({
                     "id": p.id, "name": p.name, "ip": p.interface_ip,
                     "publicKey": p.public_key, "allowedIps": p.allowed_ips, "enabled": true,
