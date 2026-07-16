@@ -64,16 +64,6 @@ const X_GAP = 175;
   imports: [FaIconComponent],
   template: `
     <div class="page">
-      <div class="page-head">
-        <h2>Topology</h2>
-        @if (topology(); as t) {
-          <span class="view-pill">{{ t.view === 'superadmin' ? 'All users' : 'Your access' }}</span>
-        }
-        <div class="head-actions">
-          <button class="btn-sm secondary" (click)="resetView()" title="Reset pan/zoom">Reset view</button>
-        </div>
-      </div>
-
       @if (loading()) {
         <div class="state"><fa-icon [icon]="['fal', 'circle-notch']" class="spin"></fa-icon> Loading topology…</div>
       } @else if (error()) {
@@ -112,7 +102,11 @@ const X_GAP = 175;
                 }
               </g>
             </svg>
-            <div class="graph-hint">drag to pan · scroll to zoom · drag a node to move it · click to inspect</div>
+            <div class="graph-controls">
+              <button class="gctrl" (click)="zoomIn()" title="Zoom in">+</button>
+              <button class="gctrl" (click)="zoomOut()" title="Zoom out">−</button>
+              <button class="gctrl" (click)="resetView()" title="Reset view">⌂</button>
+            </div>
           </div>
 
           @if (selected(); as sel) {
@@ -208,25 +202,23 @@ const X_GAP = 175;
     </div>
   `,
   styles: [`
-    .page { padding: 1.5rem; height: calc(100vh - 3rem); display: flex; flex-direction: column; }
-    .page-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
-    .page-head h2 { margin: 0; }
-    .head-actions { margin-left: auto; }
-    .view-pill { padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+    .page { padding: 0; height: calc(100vh - 42px); display: flex; flex-direction: column; }
     .state { padding: 2rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem; }
     .state.error { color: var(--danger, #ef4444); }
     .spin { animation: tspin 1s linear infinite; }
     @keyframes tspin { to { transform: rotate(360deg); } }
 
-    .graph-layout { flex: 1; display: flex; gap: 1rem; min-height: 0; transition: padding-right 0.2s ease; }
+    .graph-layout { flex: 1; display: flex; min-height: 0; transition: padding-right 0.2s ease; }
     /* When the panel is open, keep the graph clear of the fixed drawer on the page edge. */
-    .graph-layout.panel-open { padding-right: 344px; }
-    .graph-wrap { flex: 1; position: relative; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background:
+    .graph-layout.panel-open { padding-right: 340px; }
+    .graph-wrap { flex: 1; position: relative; overflow: hidden; background:
       radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 12%, transparent) 1px, transparent 1px);
       background-size: 22px 22px; cursor: grab; user-select: none; }
     .graph-wrap:active { cursor: grabbing; }
     .graph { display: block; }
-    .graph-hint { position: absolute; bottom: 8px; left: 12px; font-size: 0.66rem; color: var(--text-tertiary); pointer-events: none; }
+    .graph-controls { position: absolute; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 6px; }
+    .gctrl { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-secondary); font-size: 18px; line-height: 1; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.15); transition: all 0.12s ease; }
+    .gctrl:hover { background: var(--sidebar-hover); color: var(--text-primary); }
 
     .edge { stroke: var(--border); stroke-width: 1.5; }
     .gnode { cursor: pointer; }
@@ -423,6 +415,21 @@ export class TopologyPage implements OnInit {
       const scale = k / v.k;
       // Zoom toward the cursor.
       return { k, x: px - (px - v.x) * scale, y: py - (py - v.y) * scale };
+    });
+  }
+
+  zoomIn(): void { this.zoomBy(1.2); }
+  zoomOut(): void { this.zoomBy(1 / 1.2); }
+
+  // Zoom around the centre of the graph viewport (same math as the wheel handler).
+  private zoomBy(factor: number): void {
+    const el = document.querySelector('.graph-wrap') as HTMLElement | null;
+    const cx = el ? el.clientWidth / 2 : 400;
+    const cy = el ? el.clientHeight / 2 : 300;
+    this.t.update((v) => {
+      const k = Math.min(2.5, Math.max(0.3, v.k * factor));
+      const scale = k / v.k;
+      return { k, x: cx - (cx - v.x) * scale, y: cy - (cy - v.y) * scale };
     });
   }
 
