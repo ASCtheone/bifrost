@@ -150,9 +150,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/spark
+      # No rust-cache here on purpose: `cross` compiles build scripts inside its musl
+      # container, and a restored target/ from the host `cargo build` job (newer glibc)
+      # gets reused inside that older container — the build script then fails with
+      # `GLIBC_2.28 not found`. A clean target/ keeps every artifact container-built.
       # `cross` runs the build in a container with the right musl toolchain, so
       # aarch64 doesn't need a hand-assembled cross-linker on the runner.
       - name: Install cross
