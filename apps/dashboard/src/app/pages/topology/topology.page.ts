@@ -218,7 +218,9 @@ const X_GAP = 175;
     .spin { animation: tspin 1s linear infinite; }
     @keyframes tspin { to { transform: rotate(360deg); } }
 
-    .graph-layout { flex: 1; display: flex; gap: 1rem; min-height: 0; }
+    .graph-layout { flex: 1; display: flex; gap: 1rem; min-height: 0; transition: padding-right 0.2s ease; }
+    /* When the panel is open, keep the graph clear of the fixed drawer on the page edge. */
+    .graph-layout.panel-open { padding-right: 344px; }
     .graph-wrap { flex: 1; position: relative; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background:
       radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 12%, transparent) 1px, transparent 1px);
       background-size: 22px 22px; cursor: grab; user-select: none; }
@@ -241,7 +243,8 @@ const X_GAP = 175;
     .sdot.offline { fill: var(--text-disabled, #9ca3af); }
     .shared-dot { fill: var(--warning, #f59e0b); }
 
-    .detail-panel { width: 320px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); padding: 1rem; overflow-y: auto; }
+    /* Full-height drawer docked to the right edge of the page (below the 42px top bar). */
+    .detail-panel { position: fixed; top: 42px; right: 0; bottom: 0; width: 340px; z-index: 60; border-left: 1px solid var(--border); background: var(--bg-surface); padding: 1rem; overflow-y: auto; box-shadow: -6px 0 20px rgba(0, 0, 0, 0.18); }
     .detail-head { display: flex; align-items: center; justify-content: space-between; }
     .detail-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; overflow: hidden; }
     .detail-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
