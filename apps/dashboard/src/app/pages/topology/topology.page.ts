@@ -237,7 +237,7 @@ const X_GAP = 175;
     .shared-dot { fill: var(--warning, #f59e0b); }
 
     /* Full-height drawer docked to the right edge of the page (below the 42px top bar). */
-    .detail-panel { position: fixed; top: 42px; right: 0; bottom: 0; width: 340px; z-index: 60; border-left: 1px solid var(--border); background: var(--bg-surface); padding: 1rem; overflow-y: auto; box-shadow: -6px 0 20px rgba(0, 0, 0, 0.18); }
+    .detail-panel { position: fixed; top: 42px; right: 0; bottom: 0; width: 340px; z-index: 60; border-left: 1px solid var(--border); background: var(--sidebar-bg); padding: 1rem; overflow-y: auto; box-shadow: -6px 0 20px rgba(0, 0, 0, 0.18); }
     .detail-head { display: flex; align-items: center; justify-content: space-between; }
     .detail-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; overflow: hidden; }
     .detail-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
