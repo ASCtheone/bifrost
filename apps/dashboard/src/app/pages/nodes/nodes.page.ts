@@ -576,6 +576,24 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         <span class="info-label">API key</span>
                         <span class="info-value">{{ node.hasUnifiApiKey ? '•••••••••••• (encrypted)' : 'Not configured' }}</span>
                       </div>
+                      @if (unifiConfigured(node)) {
+                        <div class="info-row">
+                          <span class="info-label">Connection</span>
+                          <span class="info-value">
+                            <button class="btn-sm secondary" (click)="testUnifi(node)" [disabled]="busyNodeId() === node.id">
+                              {{ busyNodeId() === node.id ? 'Testing…' : 'Test connection' }}
+                            </button>
+                          </span>
+                        </div>
+                        @if (unifiTest(); as tr) {
+                          @if (tr.nodeId === node.id) {
+                            <div class="unifi-test" [class.ok]="tr.ok" [class.fail]="!tr.ok">
+                              <fa-icon [icon]="['fal', tr.ok ? 'circle-check' : 'triangle-exclamation']" [fixedWidth]="true"></fa-icon>
+                              {{ tr.message }}
+                            </div>
+                          }
+                        }
+                      }
                       <div class="info-row">
                         <span class="info-label">WireGuard endpoint</span>
                         <span class="info-value mono">
@@ -595,7 +613,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                   <div class="unifi-section">
                     <div class="section-header">
                       <h4>VPN Servers</h4>
-                      <button class="btn-sm secondary" (click)="addServer(node)" [disabled]="busyNodeId() === node.id || node.status !== 'online'" title="Create a new WireGuard server (auto 10.13.x subnet)">
+                      <button class="btn-sm secondary" (click)="addServer(node)" [disabled]="busyNodeId() === node.id || node.status !== 'online' || !unifiConfigured(node)" [title]="!unifiConfigured(node) ? 'Configure the UniFi controller first' : 'Create a new WireGuard server (auto 10.13.x subnet)'">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 5v14m-7-7h14"/></svg>
                         Add VPN
                       </button>
@@ -618,14 +636,19 @@ type PanelTab = 'status' | 'config' | 'unifi';
                       <!-- Create button tile (first, if no spark VPN yet) -->
                       @if (!isSparkVpn(node) && node.adoptionStatus === 'adopted') {
                         <button class="vpn-card create-tile"
-                                [class.disabled]="node.status !== 'online'"
+                                [class.disabled]="node.status !== 'online' || !unifiConfigured(node)"
                                 (click)="createVpn(node.id)"
-                                [disabled]="busyNodeId() === node.id || node.status !== 'online'"
-                                [title]="node.status !== 'online' ? 'The spark must be online before you can create a VPN' : 'Create the Bifrost VPN on this spark'">
+                                [disabled]="busyNodeId() === node.id || node.status !== 'online' || !unifiConfigured(node)"
+                                [title]="!unifiConfigured(node) ? 'Configure the UniFi controller first (UniFi tab)' : (node.status !== 'online' ? 'The spark must be online before you can create a VPN' : 'Create the Bifrost VPN on this spark')">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><path d="M12 5v14m-7-7h14"/></svg>
-                          <span>{{ node.status === 'online' ? 'Create Spark VPN' : 'Spark offline' }}</span>
-                          @if (node.status !== 'online') {
+                          @if (!unifiConfigured(node)) {
+                            <span>UniFi not configured</span>
+                            <span class="create-hint">Set the controller in the UniFi tab first</span>
+                          } @else if (node.status !== 'online') {
+                            <span>Spark offline</span>
                             <span class="create-hint">Bring the spark online first</span>
+                          } @else {
+                            <span>Create Spark VPN</span>
                           }
                         </button>
                       }
@@ -966,6 +989,9 @@ type PanelTab = 'status' | 'config' | 'unifi';
 
     /* UniFi sections */
     .unifi-section { margin-bottom: 1.25rem; }
+    .unifi-test { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.75rem; }
+    .unifi-test.ok { color: var(--success, #22c55e); background: color-mix(in srgb, var(--success, #22c55e) 10%, transparent); }
+    .unifi-test.fail { color: var(--danger, #ef4444); background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent); }
     .unifi-section:last-child { margin-bottom: 0; }
     .section-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
     .section-header h4 { margin: 0; font-size: 0.7rem; font-weight: 600; color: var(--text-disabled); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -1703,6 +1729,36 @@ export class NodesPage implements OnInit, OnDestroy {
     await this.withBusy(nodeId, async () => {
       await this.api.get(`/nodes`);
     });
+  }
+
+  // Whether the spark has a usable UniFi controller configured (host + a credential).
+  // Mirrors the control plane's desired-config gate; used to block VPN creation.
+  unifiConfigured(node: NodeRow): boolean {
+    return !!node.unifiHost && (node.hasUnifiApiKey || node.hasUnifiPassword);
+  }
+
+  // The result of the last "Test connection", keyed to the node it ran on.
+  unifiTest = signal<{ nodeId: string; ok: boolean; message: string } | null>(null);
+
+  // Test the UniFi connection. The spark is what actually reaches the controller (over the
+  // local network — the control plane can't), and it reports the outcome on each heartbeat,
+  // so the test reflects the spark's most recent check after a refresh.
+  async testUnifi(node: NodeRow): Promise<void> {
+    this.unifiTest.set(null);
+    await this.withBusy(node.id, async () => { /* withBusy re-fetches the nodes */ });
+    const n = this.nodes().find((x) => x.id === node.id) ?? node;
+    let res: { ok: boolean; message: string };
+    if (!this.unifiConfigured(n)) {
+      res = { ok: false, message: 'No controller configured — set a host and API key first.' };
+    } else if (n.status !== 'online') {
+      res = { ok: false, message: 'Spark is offline — bring it online, then test again.' };
+    } else if (n.error) {
+      res = { ok: false, message: n.error };
+    } else {
+      const c = n.actualConfig?.servers?.length ?? 0;
+      res = { ok: true, message: `Connected — ${c} WireGuard server${c === 1 ? '' : 's'} on the controller.` };
+    }
+    this.unifiTest.set({ nodeId: node.id, ...res });
   }
 
   async saveUnifi(nodeId: string): Promise<void> {

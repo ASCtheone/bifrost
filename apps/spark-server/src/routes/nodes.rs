@@ -383,6 +383,16 @@ async fn create_vpn(
             "Spark is offline — bring it online before creating a VPN".into(),
         ));
     }
+    // The spark can only build a VPN if it can reach a UniFi controller — a host plus a
+    // credential (API key, or username+password). Mirrors the desired-config gate.
+    let has_key = node.unifi_api_key_enc.as_deref().map_or(false, |s| !s.is_empty());
+    let has_login = !node.unifi_username.is_empty()
+        && node.unifi_password_enc.as_deref().map_or(false, |s| !s.is_empty());
+    if node.unifi_host.is_empty() || !(has_key || has_login) {
+        return Err(AppError::Conflict(
+            "Configure the UniFi controller (host + API key) before creating a VPN".into(),
+        ));
+    }
     // Re-runnable on purpose: this unbinds any current server and asks the spark to
     // provision a fresh one. The spark dedups by name, so re-running adopts the server it
     // already created rather than piling up duplicates — no "already exists" block needed.
