@@ -281,15 +281,17 @@ type PanelTab = 'status' | 'config' | 'unifi';
               </div>
             </div>
             <div class="node-badges">
-              @if (node.updateAvailable && isAdmin()) {
-                <button class="update-btn" (click)="updateSpark(node); $event.stopPropagation()" [disabled]="busyNodeId() === node.id" [title]="'Update to v' + node.latestVersion + ' (running v' + node.sparkVersion + ')'">
+              @if (updatingSpark()[node.id]; as stage) {
+                <span class="update-progress"><span class="spinner-sm"></span> {{ stage }}</span>
+              } @else if (node.updateAvailable && isAdmin()) {
+                <button class="update-btn" (click)="updateSpark(node); $event.stopPropagation()" [disabled]="nodeLocked(node)" [title]="'Update to v' + node.latestVersion + ' (running v' + node.sparkVersion + ')'">
                   Update to v{{ node.latestVersion }}
                 </button>
               } @else if (node.updateAvailable) {
                 <span class="update-pill" [title]="'v' + node.latestVersion + ' available (running v' + node.sparkVersion + ')'">Update available</span>
               }
               @if (node.backupAvailable && isAdmin()) {
-                <button class="revert-btn" (click)="revertSpark(node); $event.stopPropagation()" [disabled]="busyNodeId() === node.id" title="Revert to the previous version">
+                <button class="revert-btn" (click)="revertSpark(node); $event.stopPropagation()" [disabled]="nodeLocked(node)" title="Revert to the previous version">
                   Revert
                 </button>
               }
@@ -304,7 +306,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                 {{ node.adoptionStatus === 'adopted' ? (node.paused ? 'paused' : node.status) : node.adoptionStatus }}
               </div>
               @if (node.adoptionStatus === 'available') {
-                <button class="adopt-btn" (click)="adoptNode(node.id); $event.stopPropagation()" [disabled]="busyNodeId() === node.id">
+                <button class="adopt-btn" (click)="adoptNode(node.id); $event.stopPropagation()" [disabled]="nodeLocked(node)">
                   @if (busyNodeId() === node.id) {
                     <span class="spinner"></span> Working...
                   } @else {
@@ -364,7 +366,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                 </button>
               }
               @if (node.adoptionStatus === 'adopted' && !node.shared) {
-                <button class="action-btn" [class.resume]="node.paused" (click)="node.paused ? resumeNode(node.id) : pauseNode(node.id)" [disabled]="busyNodeId() === node.id" [title]="node.paused ? 'Resume spark' : 'Pause spark'">
+                <button class="action-btn" [class.resume]="node.paused" (click)="node.paused ? resumeNode(node.id) : pauseNode(node.id)" [disabled]="nodeLocked(node)" [title]="node.paused ? 'Resume spark' : 'Pause spark'">
                   @if (node.paused) {
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
                   } @else {
@@ -376,7 +378,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                 <!-- Issues a NEW adoption code and drops the current key, so the spark
                      can be built from scratch. Confirm-gated; the copy button above is
                      the non-destructive path for a plain update. -->
-                <button class="action-btn warning" (click)="reinstall(node)" [disabled]="busyNodeId() === node.id" title="Reinstall — issue a new adoption code">
+                <button class="action-btn warning" (click)="reinstall(node)" [disabled]="nodeLocked(node)" title="Reinstall — issue a new adoption code">
                   <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
                 </button>
               }
@@ -479,7 +481,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                       </div>
                       <div class="edit-actions">
                         <button class="btn-sm secondary" (click)="cancelEdit()">Cancel</button>
-                        <button class="btn-sm primary" (click)="saveNode(node.id)" [disabled]="busyNodeId() === node.id">
+                        <button class="btn-sm primary" (click)="saveNode(node.id)" [disabled]="nodeLocked(node)">
                           {{ busyNodeId() === node.id ? 'Saving...' : 'Save' }}
                         </button>
                       </div>
@@ -574,7 +576,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         </div>
                         <div class="edit-actions">
                           <button class="btn-sm secondary" (click)="cancelUnifiEdit()">Cancel</button>
-                          <button class="btn-sm primary" (click)="saveUnifi(node.id)" [disabled]="busyNodeId() === node.id">
+                          <button class="btn-sm primary" (click)="saveUnifi(node.id)" [disabled]="nodeLocked(node)">
                             {{ busyNodeId() === node.id ? 'Saving...' : 'Save' }}
                           </button>
                         </div>
@@ -600,7 +602,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         <div class="info-row">
                           <span class="info-label">Connection</span>
                           <span class="info-value">
-                            <button class="btn-sm secondary" (click)="testUnifi(node)" [disabled]="busyNodeId() === node.id">
+                            <button class="btn-sm secondary" (click)="testUnifi(node)" [disabled]="nodeLocked(node)">
                               {{ busyNodeId() === node.id ? 'Testing…' : 'Test connection' }}
                             </button>
                           </span>
@@ -633,11 +635,11 @@ type PanelTab = 'status' | 'config' | 'unifi';
                   <div class="unifi-section">
                     <div class="section-header">
                       <h4>VPN Servers</h4>
-                      <button class="btn-sm secondary" (click)="addServer(node)" [disabled]="busyNodeId() === node.id || node.status !== 'online' || !unifiConfigured(node)" [title]="!unifiConfigured(node) ? 'Configure the UniFi controller first' : 'Create a new WireGuard server (auto 10.13.x subnet)'">
+                      <button class="btn-sm secondary" (click)="addServer(node)" [disabled]="nodeLocked(node) || node.status !== 'online' || !unifiConfigured(node)" [title]="!unifiConfigured(node) ? 'Configure the UniFi controller first' : 'Create a new WireGuard server (auto 10.13.x subnet)'">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 5v14m-7-7h14"/></svg>
                         Add VPN
                       </button>
-                      <button class="btn-sm secondary" (click)="refreshNode(node.id)" [disabled]="busyNodeId() === node.id" title="Refresh from controller">
+                      <button class="btn-sm secondary" (click)="refreshNode(node.id)" [disabled]="nodeLocked(node)" title="Refresh from controller">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12" [class.spinning]="busyNodeId() === node.id"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                         {{ busyNodeId() === node.id ? 'Refreshing...' : 'Refresh' }}
                       </button>
@@ -658,7 +660,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         <button class="vpn-card create-tile"
                                 [class.disabled]="node.status !== 'online' || !unifiConfigured(node)"
                                 (click)="createVpn(node.id)"
-                                [disabled]="busyNodeId() === node.id || node.status !== 'online' || !unifiConfigured(node)"
+                                [disabled]="nodeLocked(node) || node.status !== 'online' || !unifiConfigured(node)"
                                 [title]="!unifiConfigured(node) ? 'Configure the UniFi controller first (UniFi tab)' : (node.status !== 'online' ? 'The spark must be online before you can create a VPN' : 'Create the Bifrost VPN on this spark')">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><path d="M12 5v14m-7-7h14"/></svg>
                           @if (!unifiConfigured(node)) {
@@ -687,7 +689,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             <div class="vpn-card-actions">
                               <button class="btn-sm secondary"
                                       (click)="recreateVpn(node)"
-                                      [disabled]="busyNodeId() === node.id || node.status !== 'online'"
+                                      [disabled]="nodeLocked(node) || node.status !== 'online'"
                                       [title]="node.status !== 'online' ? 'The spark must be online to recreate the VPN' : 'Provision a fresh WireGuard server on the controller'">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12" [class.spinning]="busyNodeId() === node.id"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                                 Recreate
@@ -735,10 +737,10 @@ type PanelTab = 'status' | 'config' | 'unifi';
                                   @if (server.peers?.length) {
                                     <span class="count-badge">{{ server.peers!.length }}</span>
                                   }
-                                  <button class="icon-btn" (click)="renameServer(node, server)" [disabled]="busyNodeId() === node.id" title="Rename server">
+                                  <button class="icon-btn" (click)="renameServer(node, server)" [disabled]="nodeLocked(node)" title="Rename server">
                                     <fa-icon [icon]="['fal', 'pen']" [fixedWidth]="true"></fa-icon>
                                   </button>
-                                  <button class="icon-btn danger" (click)="deleteServer(node, server)" [disabled]="busyNodeId() === node.id" title="Delete server">
+                                  <button class="icon-btn danger" (click)="deleteServer(node, server)" [disabled]="nodeLocked(node)" title="Delete server">
                                     <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
                                   </button>
                                 </div>
@@ -761,10 +763,10 @@ type PanelTab = 'status' | 'config' | 'unifi';
                                       <code class="mono-sm">{{ peer.ip }}</code>
                                     </div>
                                     <div class="peer-actions">
-                                      <button class="icon-btn" (click)="renamePeer(node, server, peer)" [disabled]="busyNodeId() === node.id" title="Rename client">
+                                      <button class="icon-btn" (click)="renamePeer(node, server, peer)" [disabled]="nodeLocked(node)" title="Rename client">
                                         <fa-icon [icon]="['fal', 'pen']" [fixedWidth]="true"></fa-icon>
                                       </button>
-                                      <button class="icon-btn danger" (click)="deletePeer(node, server, peer)" [disabled]="busyNodeId() === node.id" title="Delete client">
+                                      <button class="icon-btn danger" (click)="deletePeer(node, server, peer)" [disabled]="nodeLocked(node)" title="Delete client">
                                         <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
                                       </button>
                                     </div>
@@ -774,7 +776,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                                   <div class="peer-empty">No clients</div>
                                 }
                               </div>
-                              <button class="btn-sm secondary add-client" (click)="addPeer(node, server)" [disabled]="busyNodeId() === node.id || node.status !== 'online'" title="Add a WireGuard client to this server">
+                              <button class="btn-sm secondary add-client" (click)="addPeer(node, server)" [disabled]="nodeLocked(node) || node.status !== 'online'" title="Add a WireGuard client to this server">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><path d="M12 5v14m-7-7h14"/></svg>
                                 Add client
                               </button>
@@ -814,7 +816,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         <span class="count-badge">{{ getBifrostPeers(node).length }}</span>
                       }
                       @if (getOrphanPeers(node).length) {
-                        <button class="purge-btn" (click)="purgeOrphanPeers(node); $event.stopPropagation()" [disabled]="busyNodeId() === node.id">
+                        <button class="purge-btn" (click)="purgeOrphanPeers(node); $event.stopPropagation()" [disabled]="nodeLocked(node)">
                           <fa-icon [icon]="['fal', 'broom']" [fixedWidth]="true"></fa-icon>
                           Purge {{ getOrphanPeers(node).length }} orphan{{ getOrphanPeers(node).length > 1 ? 's' : '' }}
                         </button>
@@ -911,6 +913,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .wan-ip { color: var(--text-disabled); font-size: 0.6rem; }
     .version-label { color: var(--text-disabled); font-size: 0.6rem; font-family: ui-monospace, monospace; }
     .update-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+    .update-progress { display: inline-flex; align-items: center; gap: 0.4rem; padding: 2px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
     .update-btn { padding: 3px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: var(--accent); color: #fff; border: none; cursor: pointer; }
     .update-btn:hover { filter: brightness(1.08); }
     .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -1789,8 +1792,28 @@ export class NodesPage implements OnInit, OnDestroy {
     this.unifiTest.set({ nodeId: node.id, ...res });
   }
 
+  // Live per-spark update progress: nodeId -> current stage label.
+  updatingSpark = signal<Record<string, string>>({});
+
+  private setUpdating(id: string, stage: string | null): void {
+    this.updatingSpark.update((m) => {
+      const next = { ...m };
+      if (stage === null) delete next[id];
+      else next[id] = stage;
+      return next;
+    });
+  }
+
+  // A node is "locked" for interactive actions while an action is in flight OR while it's
+  // updating its binary (which restarts it) — mutating it mid-update would race the swap.
+  nodeLocked(node: NodeRow): boolean {
+    return this.busyNodeId() === node.id || !!this.updatingSpark()[node.id];
+  }
+
   // Update the spark to the latest version (verified download + swap + health-gated
-  // restart, with auto-rollback — all in the container).
+  // restart, with auto-rollback — all in the container). The apply is asynchronous — the
+  // spark picks the command up on its next cycle, downloads, restarts and health-gates —
+  // so we poll and surface the stage until its reported version catches up.
   async updateSpark(node: NodeRow): Promise<void> {
     const ok = await this.confirm.confirm({
       title: 'Update spark',
@@ -1798,9 +1821,44 @@ export class NodesPage implements OnInit, OnDestroy {
       confirmLabel: 'Update',
     });
     if (!ok) return;
-    await this.withBusy(node.id, async () => {
+    const target = node.latestVersion ?? '';
+    this.setUpdating(node.id, 'Queued on the spark…');
+    try {
       await this.api.post(`/nodes/${node.id}/update`);
-    });
+    } catch {
+      this.setUpdating(node.id, null);
+      return;
+    }
+    const startedVersion = node.sparkVersion ?? '';
+    const startedAt = Date.now();
+    const timer = setInterval(async () => {
+      await this.fetchNodes();
+      const n = this.nodes().find((x) => x.id === node.id);
+      if (!n) {
+        clearInterval(timer);
+        this.setUpdating(node.id, null);
+        return;
+      }
+      // Done: the spark now reports the target version and no longer offers an update.
+      if ((target && n.sparkVersion === target) || (n.sparkVersion !== startedVersion && !n.updateAvailable)) {
+        clearInterval(timer);
+        this.setUpdating(node.id, null);
+        return;
+      }
+      // Give up after ~5 min (health-gate may have rolled it back — the version stays put).
+      if (Date.now() - startedAt > 5 * 60 * 1000) {
+        clearInterval(timer);
+        this.setUpdating(node.id, null);
+        return;
+      }
+      // Stage from what the spark has reported: still queued vs. applying/restarting.
+      const queued = (n.pendingCommands ?? []).some((c) => c.kind === 'spark.update');
+      const failed = (n.commandResults ?? []).some((r) => !r.ok);
+      this.setUpdating(
+        node.id,
+        failed ? 'Update failed — check the spark logs' : queued ? 'Queued on the spark…' : 'Downloading & restarting…',
+      );
+    }, 4000);
   }
 
   async revertSpark(node: NodeRow): Promise<void> {

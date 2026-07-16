@@ -24,7 +24,7 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.9.12
+BIFROST_VERSION=0.9.13
 
 mkdir -p "$STATE_DIR"
 

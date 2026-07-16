@@ -27,6 +27,14 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
           </div>
         </div>
       }
+      <!-- Prominent error toast (e.g. self-update not configured) -->
+      @if (update.error(); as err) {
+        <div class="update-toast">
+          <fa-icon [icon]="['fal', 'triangle-exclamation']" [fixedWidth]="true"></fa-icon>
+          <span>{{ err }}</span>
+          <button class="update-toast-close" (click)="update.error.set(null)" title="Dismiss">✕</button>
+        </div>
+      }
       <div class="app-shell">
         <!-- Top bar (full width, above everything) -->
         <header class="top-bar">
@@ -203,6 +211,10 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
       transition: all 0.15s ease;
     }
     .top-btn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+    .update-toast { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 9998; display: flex; align-items: center; gap: 0.6rem; max-width: 560px; padding: 0.6rem 0.9rem; border-radius: 8px; background: var(--bg-surface); border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 45%, var(--border)); box-shadow: 0 8px 24px rgba(0,0,0,0.25); font-size: 0.8rem; color: var(--text-primary); }
+    .update-toast > fa-icon { color: var(--danger, #ef4444); flex-shrink: 0; }
+    .update-toast-close { background: none; border: none; color: var(--text-tertiary); cursor: pointer; padding: 0 4px; font-size: 0.85rem; }
+    .update-toast-close:hover { color: var(--text-primary); }
     .top-update-btn { display: flex; align-items: center; gap: 0.35rem; height: 26px; padding: 0 0.7rem; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 600; cursor: pointer; transition: filter 0.15s ease; }
     .top-update-btn:hover { filter: brightness(1.1); }
     .update-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg-base, #14161a) 92%, transparent); backdrop-filter: blur(4px); }

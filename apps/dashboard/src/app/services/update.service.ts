@@ -48,7 +48,9 @@ export class UpdateService {
     } catch {
       this.updating.set(false);
       this.progress.set(0);
-      this.error.set('Self-update isn\'t configured on this deployment (updater sidecar missing).');
+      this.error.set(
+        "Couldn't start the update — the updater sidecar isn't deployed, or the control plane needs redeploying. See deploy/docker-compose.yml.",
+      );
       return;
     }
     const started = Date.now();
@@ -61,9 +63,19 @@ export class UpdateService {
           clearInterval(poll);
           this.progress.set(100);
           setTimeout(() => window.location.reload(), 900);
+          return;
         }
       } catch {
         /* control plane is restarting — keep polling */
+      }
+      // Don't block forever if nothing recreates the container (sidecar missing/broken).
+      if (Date.now() - started > 4 * 60 * 1000) {
+        clearInterval(poll);
+        this.updating.set(false);
+        this.progress.set(0);
+        this.error.set(
+          "The update didn't complete in time — the control plane didn't restart onto the new version. Check the updater sidecar's logs.",
+        );
       }
     }, 3000);
   }
