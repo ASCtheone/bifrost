@@ -202,7 +202,8 @@ const X_GAP = 175;
     </div>
   `,
   styles: [`
-    .page { padding: 0; height: calc(100vh - 42px); display: flex; flex-direction: column; }
+    :host { display: block; height: 100%; }
+    .page { padding: 0; height: 100%; display: flex; flex-direction: column; }
     .state { padding: 2rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem; }
     .state.error { color: var(--danger, #ef4444); }
     .spin { animation: tspin 1s linear infinite; }

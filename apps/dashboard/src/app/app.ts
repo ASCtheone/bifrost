@@ -158,7 +158,7 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
               }
             </div>
           </nav>
-          <main class="content">
+          <main class="content" [class.full-bleed]="fullBleed()">
             <router-outlet />
           </main>
         </div>
@@ -321,6 +321,8 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
       padding: 1.75rem 2rem;
       background: var(--bg-primary);
     }
+    /* Full-bleed routes (topology) fill the content area exactly — no padding, no scroll. */
+    .content.full-bleed { padding: 0; overflow: hidden; }
     .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 2000; }
     .confirm-dialog { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.25rem; width: 340px; box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
     .confirm-title { margin: 0 0 0.4rem; font-size: 0.95rem; font-weight: 600; color: var(--text-primary); }
@@ -342,6 +344,7 @@ export class App implements OnInit, OnDestroy {
 
   loggedIn = signal(false);
   pageTitle = signal('Dashboard');
+  fullBleed = signal(false);
   menuOpen = signal(false);
   notifOpen = signal(false);
   barDismissed = signal(false);
@@ -384,6 +387,8 @@ export class App implements OnInit, OnDestroy {
     this.router.events.subscribe(() => {
       const url = this.router.url;
       this.pageTitle.set(this.routeTitles[url] ?? 'Dashboard');
+      // The topology view is full-bleed — it fills the content area with no padding.
+      this.fullBleed.set(url.split('?')[0].startsWith('/topology'));
     });
   }
 
