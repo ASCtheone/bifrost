@@ -590,6 +590,8 @@ async fn heartbeat(
     });
 
     let mut body = json!({ "actualConfig": actual_config });
+    // The spark's running version, so the dashboard can flag when an update is available.
+    body["version"] = json!(env!("CARGO_PKG_VERSION"));
     // Clear "creating on controller" once a server is actually bound. The dashboard sets
     // pending_vpn_create when you ask for a spark VPN, and nothing ever cleared it — the
     // Rust spark never implemented server creation — so the UI sat on "Creating on

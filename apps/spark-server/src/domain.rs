@@ -94,6 +94,8 @@ pub struct Node {
     pub pending_commands: Option<Json<serde_json::Value>>,
     /// Outcome of the most recently executed commands (id, ok, error) — for the dashboard.
     pub command_results: Option<Json<serde_json::Value>>,
+    /// The spark's self-reported running version (from its heartbeat).
+    pub spark_version: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

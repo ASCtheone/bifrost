@@ -122,6 +122,11 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         // and surface failures.
         "pendingCommands": n.pending_commands.as_ref().map(|c| c.0.clone()),
         "commandResults": n.command_results.as_ref().map(|c| c.0.clone()),
+        // Version: what the spark reports vs. what this control plane ships (same monorepo
+        // version), so the dashboard can offer a per-spark update.
+        "sparkVersion": n.spark_version,
+        "latestVersion": env!("CARGO_PKG_VERSION"),
+        "updateAvailable": n.spark_version.as_deref().map_or(false, |v| v != env!("CARGO_PKG_VERSION")),
         "lastSeen": n.last_seen,
         "createdAt": n.created_at,
         "ownerId": if n.owner_id.is_empty() { Value::Null } else { json!(n.owner_id) },

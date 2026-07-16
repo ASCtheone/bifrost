@@ -456,6 +456,8 @@ pub struct HeartbeatUpdate {
     /// Always written. `None` clears it, so a spark that recovers stops showing a
     /// stale error; `Some` records why UniFi is unhappy while the spark itself is fine.
     pub error: Option<String>,
+    /// The spark's reported version; `None` leaves the stored value untouched.
+    pub spark_version: Option<String>,
 }
 
 pub async fn update_heartbeat(
@@ -502,6 +504,9 @@ pub async fn update_heartbeat(
     }
     if u.clear_peer_deletions {
         qb.push(", pending_peer_deletions = ").push_bind("[]".to_string());
+    }
+    if let Some(v) = u.spark_version {
+        qb.push(", spark_version = ").push_bind(v);
     }
 
     qb.push(" WHERE node_id = ").push_bind(node_id.to_string());

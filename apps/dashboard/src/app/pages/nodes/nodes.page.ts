@@ -60,6 +60,10 @@ interface NodeRow {
   readonly sparkVpnName: string | null;
   readonly sparkVpnId: string | null;
   readonly pendingVpnCreate: boolean;
+  // Version: what the spark reports vs. what the control plane ships.
+  readonly sparkVersion?: string | null;
+  readonly latestVersion?: string;
+  readonly updateAvailable?: boolean;
   // Management-command queue + last results (create/update/delete server or peer).
   readonly pendingCommands?: readonly { id: string; kind: string }[];
   readonly commandResults?: readonly {
@@ -269,10 +273,16 @@ type PanelTab = 'status' | 'config' | 'unifi';
                   @if (node.speedDown) {
                     <span class="speed-label">↓&nbsp;{{ node.speedDown | number:'1.0-0' }}<span class="speed-sep">·</span>↑&nbsp;{{ node.speedUp | number:'1.0-0' }}<span class="speed-unit">Mbps</span></span>
                   }
+                  @if (node.sparkVersion) {
+                    <span class="version-label">v{{ node.sparkVersion }}</span>
+                  }
                 </div>
               </div>
             </div>
             <div class="node-badges">
+              @if (node.updateAvailable) {
+                <span class="update-pill" [title]="'v' + node.latestVersion + ' available (running v' + node.sparkVersion + ')'">Update available</span>
+              }
               <span class="role-pill" [class.primary]="node.role === 'primary'">{{ node.role }}</span>
               <div class="status-cell">
                 <span class="status-dot"
@@ -889,6 +899,8 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .inline-rename { background: var(--bg-input); border: 1px solid var(--accent); border-radius: 4px; padding: 2px 6px; color: var(--text-primary); font-size: 0.85rem; font-weight: 500; outline: none; width: 160px; }
     .geo-label { color: var(--accent); font-family: inherit; font-size: 0.6rem; }
     .wan-ip { color: var(--text-disabled); font-size: 0.6rem; }
+    .version-label { color: var(--text-disabled); font-size: 0.6rem; font-family: ui-monospace, monospace; }
+    .update-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
     .owner-badge { display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
     .owner-label { font-size: 0.6rem; color: var(--text-disabled); background: var(--bg-input); padding: 2px 8px; border-radius: 6px; }
     .unassign-btn { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; background: none; border: none; color: var(--text-disabled); cursor: pointer; font-size: 0.55rem; border-radius: 4px; transition: all 0.15s ease; }

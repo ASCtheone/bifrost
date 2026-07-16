@@ -1,3 +1,7 @@
+// The node list JSON is a large `json!` literal; the default macro recursion limit is
+// too low for it once every field is included.
+#![recursion_limit = "256"]
+
 mod auth;
 mod config;
 mod crypto;

@@ -173,6 +173,7 @@ async fn heartbeat(
             .get("clearPeerDeletions")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        spark_version: b.get("version").and_then(Value::as_str).map(String::from),
     };
 
     node_repo::update_heartbeat(&st.pool, &node_id, update).await?;
