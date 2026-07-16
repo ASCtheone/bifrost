@@ -1,4 +1,4 @@
-import { Component, inject, signal, OnInit, OnDestroy } from '@angular/core';
+import { Component, inject, signal, OnInit, OnDestroy, HostListener } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
@@ -29,6 +29,12 @@ interface VpnPeer {
 interface VpnSnapshot {
   readonly servers: readonly VpnServer[];
   readonly peers: readonly VpnPeer[];
+}
+
+interface MenuItemT {
+  readonly label: string;
+  readonly danger?: boolean;
+  readonly run: () => void | Promise<void>;
 }
 
 interface NodeRow {
@@ -598,6 +604,9 @@ type PanelTab = 'status' | 'config' | 'unifi';
                       @if (hasPendingCommands(node)) {
                         <span class="cmd-pending"><span class="spinner-sm"></span> applying…</span>
                       }
+                      @if (node.status === 'online') {
+                        <span class="freshness" title="How long since the spark last reported the controller state">scanned {{ lastSeenAgo(node) }}</span>
+                      }
                       @if (node.actualConfig?.servers?.length) {
                         <span class="count-badge">{{ node.actualConfig!.servers.length }}</span>
                       }
@@ -621,7 +630,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
 
                       <!-- Spark VPN card (first, highlighted) -->
                       @if (isSparkVpn(node)) {
-                        <div class="vpn-card spark-vpn">
+                        <div class="vpn-card spark-vpn" (contextmenu)="openSparkMenu($event, node)">
                           <div class="vpn-card-header">
                             <div class="spark-vpn-badge">
                               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
@@ -668,7 +677,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                       @if (node.actualConfig?.servers?.length) {
                         @for (server of node.actualConfig!.servers; track server.id) {
                           @if (!isSparkServer(node, server)) {
-                            <div class="vpn-card dimmed">
+                            <div class="vpn-card dimmed" (contextmenu)="openServerMenu($event, node, server)">
                               <div class="vpn-card-header">
                                 <span class="vpn-name">{{ server.name }}</span>
                                 <div class="vpn-card-actions">
@@ -695,7 +704,7 @@ type PanelTab = 'status' | 'config' | 'unifi';
                               </div>
                               <div class="peer-list compact">
                                 @for (peer of server.peers ?? []; track peer.id) {
-                                  <div class="peer-row">
+                                  <div class="peer-row" (contextmenu)="openPeerMenu($event, node, server, peer)">
                                     <div class="peer-info">
                                       <span class="peer-name">{{ peer.name }}</span>
                                       <code class="mono-sm">{{ peer.ip }}</code>
@@ -793,6 +802,15 @@ type PanelTab = 'status' | 'config' | 'unifi';
       }
       @if (nodes().length === 0) {
         <div class="empty-state">No sparks yet — click "Add Spark" to get started</div>
+      }
+
+      @if (contextMenu(); as menu) {
+        <div class="ctx-backdrop" (click)="closeMenu()" (contextmenu)="$event.preventDefault(); closeMenu()"></div>
+        <div class="ctx-menu" [style.left.px]="menu.x" [style.top.px]="menu.y">
+          @for (item of menu.items; track item.label) {
+            <button class="ctx-item" [class.danger]="item.danger" (click)="runMenuItem(item)">{{ item.label }}</button>
+          }
+        </div>
       }
     </div>
   `,
@@ -963,6 +981,13 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .config-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.75rem; font-weight: 600; color: var(--accent); margin-bottom: 0.4rem; }
     .config-body { margin: 0; padding: 0.5rem 0.6rem; background: var(--bg-base, var(--bg-surface)); border-radius: 6px; font-size: 0.68rem; line-height: 1.5; overflow-x: auto; white-space: pre; color: var(--text-secondary); }
     .config-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
+    .freshness { font-size: 0.66rem; color: var(--text-tertiary); }
+    .ctx-backdrop { position: fixed; inset: 0; z-index: 1000; }
+    .ctx-menu { position: fixed; z-index: 1001; min-width: 150px; padding: 0.25rem; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); display: flex; flex-direction: column; }
+    .ctx-item { display: block; width: 100%; text-align: left; padding: 0.4rem 0.6rem; background: transparent; border: none; border-radius: 5px; color: var(--text-primary); font-size: 0.78rem; cursor: pointer; }
+    .ctx-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .ctx-item.danger { color: var(--danger, #ef4444); }
+    .ctx-item.danger:hover { background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent); }
     .vpn-card.spark-vpn { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface)); }
     .spark-vpn-badge { display: flex; align-items: center; gap: 0.4rem; color: var(--accent); }
     .spark-vpn-badge .vpn-name { color: var(--accent); font-weight: 600; }
@@ -1574,6 +1599,83 @@ export class NodesPage implements OnInit, OnDestroy {
     a.download = `bifrost-${cfg.label}.conf`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // ── Right-click context menus ────────────────────────────────────
+
+  contextMenu = signal<{ x: number; y: number; items: MenuItemT[] } | null>(null);
+
+  openServerMenu(ev: MouseEvent, node: NodeRow, server: VpnServer): void {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const items: MenuItemT[] = [
+      { label: 'Add client', run: () => this.addPeer(node, server) },
+      { label: 'Rename server', run: () => this.renameServer(node, server) },
+    ];
+    if (this.isSparkServer(node, server)) {
+      items.push({ label: 'Recreate now', run: () => this.quickRecreate(node) });
+    }
+    items.push({ label: 'Delete server', danger: true, run: () => this.deleteServer(node, server) });
+    this.contextMenu.set({ x: ev.clientX, y: ev.clientY, items });
+  }
+
+  // The spark card renders even with no bound server (deleted): offer recreate then.
+  openSparkMenu(ev: MouseEvent, node: NodeRow): void {
+    const server = this.getSparkServer(node);
+    if (server) {
+      this.openServerMenu(ev, node, server);
+      return;
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+    this.contextMenu.set({
+      x: ev.clientX,
+      y: ev.clientY,
+      items: [{ label: 'Recreate now', run: () => this.quickRecreate(node) }],
+    });
+  }
+
+  openPeerMenu(ev: MouseEvent, node: NodeRow, server: VpnServer, peer: VpnPeer): void {
+    ev.preventDefault();
+    ev.stopPropagation();
+    this.contextMenu.set({
+      x: ev.clientX,
+      y: ev.clientY,
+      items: [
+        { label: 'Rename client', run: () => this.renamePeer(node, server, peer) },
+        { label: 'Delete client', danger: true, run: () => this.deletePeer(node, server, peer) },
+      ],
+    });
+  }
+
+  closeMenu(): void {
+    this.contextMenu.set(null);
+  }
+
+  runMenuItem(item: MenuItemT): void {
+    this.closeMenu();
+    void item.run();
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    this.closeMenu();
+  }
+
+  // Recreate the spark VPN with no confirmation — the "quick recreate" the operator asked
+  // for when they just want a fresh server immediately.
+  async quickRecreate(node: NodeRow): Promise<void> {
+    await this.createVpn(node.id);
+  }
+
+  // Human "scanned N ago" from the last heartbeat, so the operator knows how fresh the
+  // inventory is (the spark reports the full controller state every cycle).
+  lastSeenAgo(node: NodeRow): string {
+    if (!node.lastSeen) return 'never';
+    const secs = Math.max(0, Math.floor((Date.now() - new Date(node.lastSeen).getTime()) / 1000));
+    if (secs < 60) return `${secs}s ago`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+    return `${Math.floor(secs / 3600)}h ago`;
   }
 
   async pauseNode(nodeId: string): Promise<void> {
