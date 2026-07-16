@@ -174,6 +174,7 @@ async fn heartbeat(
             .and_then(Value::as_bool)
             .unwrap_or(false),
         spark_version: b.get("version").and_then(Value::as_str).map(String::from),
+        backup_available: b.get("backupAvailable").and_then(Value::as_bool),
     };
 
     node_repo::update_heartbeat(&st.pool, &node_id, update).await?;

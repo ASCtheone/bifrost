@@ -64,6 +64,7 @@ interface NodeRow {
   readonly sparkVersion?: string | null;
   readonly latestVersion?: string;
   readonly updateAvailable?: boolean;
+  readonly backupAvailable?: boolean;
   // Management-command queue + last results (create/update/delete server or peer).
   readonly pendingCommands?: readonly { id: string; kind: string }[];
   readonly commandResults?: readonly {
@@ -280,8 +281,17 @@ type PanelTab = 'status' | 'config' | 'unifi';
               </div>
             </div>
             <div class="node-badges">
-              @if (node.updateAvailable) {
+              @if (node.updateAvailable && isAdmin()) {
+                <button class="update-btn" (click)="updateSpark(node); $event.stopPropagation()" [disabled]="busyNodeId() === node.id" [title]="'Update to v' + node.latestVersion + ' (running v' + node.sparkVersion + ')'">
+                  Update to v{{ node.latestVersion }}
+                </button>
+              } @else if (node.updateAvailable) {
                 <span class="update-pill" [title]="'v' + node.latestVersion + ' available (running v' + node.sparkVersion + ')'">Update available</span>
+              }
+              @if (node.backupAvailable && isAdmin()) {
+                <button class="revert-btn" (click)="revertSpark(node); $event.stopPropagation()" [disabled]="busyNodeId() === node.id" title="Revert to the previous version">
+                  Revert
+                </button>
               }
               <span class="role-pill" [class.primary]="node.role === 'primary'">{{ node.role }}</span>
               <div class="status-cell">
@@ -901,6 +911,12 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .wan-ip { color: var(--text-disabled); font-size: 0.6rem; }
     .version-label { color: var(--text-disabled); font-size: 0.6rem; font-family: ui-monospace, monospace; }
     .update-pill { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+    .update-btn { padding: 3px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: var(--accent); color: #fff; border: none; cursor: pointer; }
+    .update-btn:hover { filter: brightness(1.08); }
+    .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .revert-btn { padding: 3px 10px; border-radius: 10px; font-size: 0.62rem; font-weight: 600; background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); cursor: pointer; }
+    .revert-btn:hover { background: var(--sidebar-hover); }
+    .revert-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .owner-badge { display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; }
     .owner-label { font-size: 0.6rem; color: var(--text-disabled); background: var(--bg-input); padding: 2px 8px; border-radius: 6px; }
     .unassign-btn { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; background: none; border: none; color: var(--text-disabled); cursor: pointer; font-size: 0.55rem; border-radius: 4px; transition: all 0.15s ease; }
@@ -1771,6 +1787,33 @@ export class NodesPage implements OnInit, OnDestroy {
       res = { ok: true, message: `Connected — ${c} WireGuard server${c === 1 ? '' : 's'} on the controller.` };
     }
     this.unifiTest.set({ nodeId: node.id, ...res });
+  }
+
+  // Update the spark to the latest version (verified download + swap + health-gated
+  // restart, with auto-rollback — all in the container).
+  async updateSpark(node: NodeRow): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Update spark',
+      message: `Update "${node.name}" from v${node.sparkVersion} to v${node.latestVersion}? The spark downloads the verified binary and restarts; if the new version isn't healthy it rolls back automatically.`,
+      confirmLabel: 'Update',
+    });
+    if (!ok) return;
+    await this.withBusy(node.id, async () => {
+      await this.api.post(`/nodes/${node.id}/update`);
+    });
+  }
+
+  async revertSpark(node: NodeRow): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Revert spark',
+      message: `Revert "${node.name}" to the previous version (its backup)? The spark restarts into it.`,
+      confirmLabel: 'Revert',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.withBusy(node.id, async () => {
+      await this.api.post(`/nodes/${node.id}/revert`);
+    });
   }
 
   async saveUnifi(nodeId: string): Promise<void> {

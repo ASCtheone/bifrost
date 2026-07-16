@@ -96,6 +96,8 @@ pub struct Node {
     pub command_results: Option<Json<serde_json::Value>>,
     /// The spark's self-reported running version (from its heartbeat).
     pub spark_version: Option<String>,
+    /// Whether the spark has a rollback binary staged (drives the Revert button).
+    pub spark_backup_available: bool,
     pub created_at: String,
     pub updated_at: String,
 }

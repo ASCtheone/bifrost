@@ -30,9 +30,14 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home /etc/bifrost bifrost
+# The image binary is the seed source; the entrypoint copies it onto the volume and runs
+# it from there, so a self-update (which replaces the volume copy) survives a recreate.
 COPY --from=build /src/target/release/bifrost-spark /usr/local/bin/bifrost-spark
-# State (node id/key) is written next to the config; keep it on a volume.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+# State (node id/key) + the running binary + its backup all live on the volume.
 ENV BIFROST_SPARK_CONFIG=/etc/bifrost/bifrost-spark.toml
+ENV BIFROST_UPDATE_DIR=/etc/bifrost/bin
 VOLUME ["/etc/bifrost"]
 USER bifrost
-CMD ["bifrost-spark"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

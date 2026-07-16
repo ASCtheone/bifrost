@@ -458,6 +458,8 @@ pub struct HeartbeatUpdate {
     pub error: Option<String>,
     /// The spark's reported version; `None` leaves the stored value untouched.
     pub spark_version: Option<String>,
+    /// Whether the spark has a rollback binary staged; `None` leaves it untouched.
+    pub backup_available: Option<bool>,
 }
 
 pub async fn update_heartbeat(
@@ -507,6 +509,9 @@ pub async fn update_heartbeat(
     }
     if let Some(v) = u.spark_version {
         qb.push(", spark_version = ").push_bind(v);
+    }
+    if let Some(v) = u.backup_available {
+        qb.push(", spark_backup_available = ").push_bind(v);
     }
 
     qb.push(" WHERE node_id = ").push_bind(node_id.to_string());

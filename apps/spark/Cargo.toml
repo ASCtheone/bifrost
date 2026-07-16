@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-spark"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2021"
 description = "Bifrost spark — on-site bridge that provisions the WireGuard server on a UniFi controller to match the Bifrost control plane."
 
@@ -25,3 +25,5 @@ chrono = "0.4"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 base64 = "0.22"
 rand = "0.8"
+# Verify the SHA256 of a downloaded self-update binary before swapping it in.
+sha2 = "0.10"

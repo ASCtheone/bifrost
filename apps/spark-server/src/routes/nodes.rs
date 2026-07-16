@@ -30,6 +30,9 @@ pub fn routes() -> Router<AppState> {
         // WireGuard client/peer CRUD on a given server — also enqueued as commands.
         .route("/nodes/:nodeId/servers/:serverId/peers", post(create_wg_peer))
         .route("/nodes/:nodeId/servers/:serverId/peers/:peerId", put(update_wg_peer).delete(delete_wg_peer))
+        // Self-update: enqueue an update/revert command the spark applies in-container.
+        .route("/nodes/:nodeId/update", post(update_spark))
+        .route("/nodes/:nodeId/revert", post(revert_spark))
         .route("/nodes/:nodeId/revoke", post(revoke_node))
         .route("/nodes/:nodeId/delete-peer", post(delete_node_peer))
         .route("/nodes/:nodeId/role", put(set_node_role))
@@ -127,6 +130,7 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         "sparkVersion": n.spark_version,
         "latestVersion": env!("CARGO_PKG_VERSION"),
         "updateAvailable": n.spark_version.as_deref().map_or(false, |v| v != env!("CARGO_PKG_VERSION")),
+        "backupAvailable": n.spark_backup_available,
         "lastSeen": n.last_seen,
         "createdAt": n.created_at,
         "ownerId": if n.owner_id.is_empty() { Value::Null } else { json!(n.owner_id) },
@@ -482,6 +486,40 @@ async fn delete_server(
         json!({ "id": util::ulid(), "kind": "server.delete", "serverId": server_id }),
     )
     .await
+}
+
+// ── Spark self-update (enqueued commands) ───────────────────────
+
+/// Where the spark downloads its verified binary + SHA256SUMS from — the GitHub release
+/// the installer's native mode already uses. Configurable via env for a mirror.
+fn spark_download_base() -> String {
+    std::env::var("BIFROST_SPARK_DOWNLOAD_BASE")
+        .unwrap_or_else(|_| "https://github.com/asctheone/bifrost/releases/latest/download".into())
+}
+
+async fn update_spark(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(node_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    enqueue(
+        &st,
+        &node_id,
+        json!({
+            "id": util::ulid(), "kind": "spark.update",
+            "version": env!("CARGO_PKG_VERSION"),
+            "downloadBase": spark_download_base(),
+        }),
+    )
+    .await
+}
+
+async fn revert_spark(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(node_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    enqueue(&st, &node_id, json!({ "id": util::ulid(), "kind": "spark.revert" })).await
 }
 
 // ── WireGuard client/peer CRUD (enqueued commands) ──────────────

@@ -6,6 +6,7 @@
 mod config;
 mod control;
 mod unifi;
+mod update;
 
 use anyhow::{Context, Result};
 use config::{Config, State};
@@ -173,8 +174,8 @@ async fn sync_once(
 ) -> Result<()> {
     // Drain the management-command queue first, so the inventory we then report reflects
     // any server just created/updated/deleted this cycle.
-    let command_results = execute_commands(unifi, &desired.commands).await;
-    match reconcile(unifi, desired).await {
+    let (command_results, restart) = execute_commands(unifi, &desired.commands).await;
+    let outcome = match reconcile(unifi, desired).await {
         Ok(o) => {
             heartbeat(control, node_id, node_key, o.server.as_ref(), &o.peers, &o.inventory, &command_results, o.clear_deletions, None).await
         }
@@ -182,18 +183,30 @@ async fn sync_once(
             let msg = format!("{e:#}");
             tracing::warn!("unifi reconcile failed: {msg}");
             // Still report in: online, with the reason, so the dashboard can show it.
-            heartbeat(control, node_id, node_key, None, &[], &[], &command_results, false, Some(&msg)).await?;
+            let _ = heartbeat(control, node_id, node_key, None, &[], &[], &command_results, false, Some(&msg)).await;
             Err(e)
         }
+    };
+    // A binary update/revert was applied: exit so the entrypoint restarts into it. We do
+    // this even if the heartbeat above failed — staying would risk re-running the update
+    // and overwriting the backup with the just-swapped binary; the target-version guard
+    // makes the post-restart re-run a safe no-op instead.
+    if restart {
+        tracing::info!("binary update applied — exiting to restart into it");
+        std::process::exit(0);
     }
+    outcome
 }
 
 /// Execute the queued management commands against the controller and return a result per
 /// command (`{ id, ok, error? }`) for the control plane to acknowledge. Commands are
 /// independent: one failing doesn't stop the rest, and its error is reported, not
 /// swallowed. An unrecognised kind reports an error rather than being silently dropped.
-async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> Vec<Value> {
+/// Returns the per-command results and whether a binary update/revert was applied (in
+/// which case the caller restarts the process after the acknowledging heartbeat).
+async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> (Vec<Value>, bool) {
     let mut results = Vec::with_capacity(commands.len());
+    let mut restart = false;
     for cmd in commands {
         let id = cmd.get("id").and_then(Value::as_str).unwrap_or("").to_string();
         let kind = cmd.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -263,6 +276,33 @@ async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> Vec<Va
                 let peer_id = cmd.get("peerId").and_then(Value::as_str).unwrap_or_default();
                 unifi.delete_peer(sid, peer_id).await.map(|_| Value::Null)
             }
+            // Self-update: download + verify + swap the binary, then restart. Guarded by the
+            // target version so a re-run after restart (if the ack didn't land) is a no-op —
+            // which is what protects the single backup from being overwritten by the new
+            // binary. `update` is set so the caller restarts once this cycle's heartbeat has
+            // acknowledged the command.
+            "spark.update" => {
+                let target = cmd.get("version").and_then(Value::as_str).unwrap_or("");
+                if target == env!("CARGO_PKG_VERSION") {
+                    Ok(Value::Null) // already on the target version
+                } else {
+                    let base = cmd.get("downloadBase").and_then(Value::as_str).unwrap_or_default();
+                    match update::apply_update(base).await {
+                        Ok(()) => {
+                            restart = true;
+                            Ok(json!({ "restarting": true }))
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+            "spark.revert" => match update::revert() {
+                Ok(()) => {
+                    restart = true;
+                    Ok(json!({ "restarting": true }))
+                }
+                Err(e) => Err(e),
+            },
             other => Err(anyhow::anyhow!("unknown command kind: {other}")),
         };
         match outcome {
@@ -280,7 +320,7 @@ async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> Vec<Va
             }
         }
     }
-    results
+    (results, restart)
 }
 
 /// A command's `allowedIps`, or empty (which `create_client_peer` turns into the peer's
@@ -592,6 +632,8 @@ async fn heartbeat(
     let mut body = json!({ "actualConfig": actual_config });
     // The spark's running version, so the dashboard can flag when an update is available.
     body["version"] = json!(env!("CARGO_PKG_VERSION"));
+    // Whether a rollback target exists, so the dashboard can offer Revert.
+    body["backupAvailable"] = json!(update::backup_exists());
     // Clear "creating on controller" once a server is actually bound. The dashboard sets
     // pending_vpn_create when you ask for a spark VPN, and nothing ever cleared it — the
     // Rust spark never implemented server creation — so the UI sat on "Creating on
@@ -621,7 +663,11 @@ async fn heartbeat(
     // this very request and derives it there — no third-party lookup, nothing to fail
     // on a host that can reach the master but not the open internet, and a node cannot
     // claim an address that isn't its own.
-    control.heartbeat(node_id, node_key, &body).await
+    control.heartbeat(node_id, node_key, &body).await?;
+    // A successful heartbeat means this binary is healthy — mark it so the entrypoint's
+    // post-update health gate commits the update instead of rolling back.
+    update::mark_healthy();
+    Ok(())
 }
 
 #[cfg(test)]
