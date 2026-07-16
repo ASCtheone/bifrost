@@ -55,6 +55,7 @@ async fn list_nodes(
         .await?
         .into_iter()
         .collect();
+    let latest = st.latest_version.read().map(|g| g.clone()).unwrap_or_default();
 
     let nodes: Vec<Value> = all_nodes
         .iter()
@@ -70,14 +71,14 @@ async fn list_nodes(
         .map(|n| {
             let is_owned = n.owner_email.is_empty() || n.owner_email == auth.email;
             let is_shared = shared.contains(&n.node_id);
-            node_to_list_json(n, is_shared && !is_owned)
+            node_to_list_json(n, is_shared && !is_owned, &latest)
         })
         .collect();
 
     Ok(Json(json!({ "nodes": nodes })))
 }
 
-fn node_to_list_json(n: &Node, shared: bool) -> Value {
+fn node_to_list_json(n: &Node, shared: bool, latest: &str) -> Value {
     json!({
         "id": n.node_id,
         "name": if n.node_name.is_empty() { n.node_id.clone() } else { n.node_name.clone() },
@@ -128,8 +129,8 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         // Version: what the spark reports vs. what this control plane ships (same monorepo
         // version), so the dashboard can offer a per-spark update.
         "sparkVersion": n.spark_version,
-        "latestVersion": env!("CARGO_PKG_VERSION"),
-        "updateAvailable": n.spark_version.as_deref().map_or(false, |v| v != env!("CARGO_PKG_VERSION")),
+        "latestVersion": latest,
+        "updateAvailable": n.spark_version.as_deref().map_or(false, |v| crate::release::version_lt(v, latest)),
         "backupAvailable": n.spark_backup_available,
         "lastSeen": n.last_seen,
         "createdAt": n.created_at,
@@ -502,12 +503,15 @@ async fn update_spark(
     AdminAuth(_auth): AdminAuth,
     Path(node_id): Path<String>,
 ) -> AppResult<Json<Value>> {
+    // Target the latest *published* version (what the release download actually is), so the
+    // spark's version-guard recognises the update as complete afterwards.
+    let target = st.latest_version.read().map(|g| g.clone()).unwrap_or_else(|_| env!("CARGO_PKG_VERSION").into());
     enqueue(
         &st,
         &node_id,
         json!({
             "id": util::ulid(), "kind": "spark.update",
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": target,
             "downloadBase": spark_download_base(),
         }),
     )

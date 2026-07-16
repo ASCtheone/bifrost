@@ -9,6 +9,7 @@ mod db;
 mod domain;
 mod error;
 mod net;
+mod release;
 mod repo;
 mod routes;
 mod state;
@@ -92,11 +93,18 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = format!("{}:{}", config.bind_addr, config.api_port);
     let dashboard_dir = config.dashboard_dir.clone();
+    // Latest-version cache, seeded with our own build and kept current from GitHub
+    // Releases by a background task — so "update available" tracks what's published.
+    let latest_version: release::LatestVersion =
+        Arc::new(std::sync::RwLock::new(env!("CARGO_PKG_VERSION").to_string()));
+    release::spawn_refresh(latest_version.clone());
+
     let state = state::AppState {
         pool,
         config: Arc::new(config),
         jwt,
         cipher,
+        latest_version,
     };
 
     let cors = CorsLayer::new()

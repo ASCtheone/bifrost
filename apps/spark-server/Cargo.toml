@@ -1,6 +1,6 @@
 [package]
 name = "spark-server"
-version = "0.9.8"
+version = "0.9.9"
 edition = "2021"
 description = "Bifrost self-hosted control plane (replaces the AWS serverless backend)"
 
@@ -22,6 +22,9 @@ subtle = "2"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
 ulid = "1"
+# Check GitHub Releases for the latest published version, so the dashboard can offer
+# spark updates independently of the control plane's own build.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Local auth (replaces AWS Cognito): password hashing + JWT issuance/verification
 argon2 = "0.5"
 jsonwebtoken = "9"

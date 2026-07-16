@@ -11,4 +11,7 @@ pub struct AppState {
     pub jwt: Arc<JwtKeys>,
     /// Encrypts secrets stored in the database (today: the UniFi password).
     pub cipher: Arc<Cipher>,
+    /// Latest published version, checked online against GitHub Releases and refreshed in
+    /// the background — the basis for "update available" (see crate::release).
+    pub latest_version: crate::release::LatestVersion,
 }
