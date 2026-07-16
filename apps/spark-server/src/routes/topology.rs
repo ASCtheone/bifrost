@@ -44,6 +44,7 @@ fn device_json(d: &Device) -> Value {
         "name": d.name,
         "type": d.device_type,
         "status": d.status,
+        "enabled": d.enabled,
         "assignedIp": d.assigned_ip,
         "ownerEmail": if d.owner_email.is_empty() { Value::Null } else { json!(d.owner_email) },
     })
@@ -55,6 +56,7 @@ fn spark_json(n: &Node, shared: bool, devices: &[&Device]) -> Value {
         "name": if n.node_name.is_empty() { n.node_id.clone() } else { n.node_name.clone() },
         // A paused spark is reported offline everywhere, matching the nodes list.
         "status": if n.paused { "offline" } else { n.status.as_str() },
+        "paused": n.paused,
         "adoptionStatus": n.adoption_status,
         "shared": shared,
         "ownerEmail": if n.owner_email.is_empty() { Value::Null } else { json!(n.owner_email) },
@@ -81,6 +83,9 @@ async fn superadmin_view(st: &AppState, nodes: &[Node], devices: &[Device]) -> A
     // Roles by email, so a node owner who isn't a known user still gets a sensible label.
     let role_by_email: HashMap<&str, &str> =
         users.iter().map(|u| (u.email.as_str(), role_label(&u.groups.0))).collect();
+    // username + enabled, so the panel can act on the user (endpoints key on username).
+    let user_by_email: HashMap<&str, &crate::domain::User> =
+        users.iter().map(|u| (u.email.as_str(), u)).collect();
 
     // Every owner-email that actually owns a spark, plus every known user — so users with
     // no spark still appear, and a spark owned by a since-deleted user isn't hidden.
@@ -101,9 +106,12 @@ async fn superadmin_view(st: &AppState, nodes: &[Node], devices: &[Device]) -> A
                 .filter(|n| n.owner_email == owner_match)
                 .map(|n| spark_json(n, false, &devices_on(devices, &n.node_id, None)))
                 .collect();
+            let u = user_by_email.get(email.as_str());
             json!({
                 "email": email,
                 "role": role_by_email.get(email.as_str()).copied().unwrap_or("unknown"),
+                "username": u.map(|u| u.username.clone()),
+                "enabled": u.map(|u| u.enabled),
                 "isSelf": false,
                 "sparks": sparks,
             })

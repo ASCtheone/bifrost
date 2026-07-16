@@ -1,12 +1,15 @@
 import { Component, inject, signal, computed, OnInit, HostListener } from '@angular/core';
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
 import { ApiService } from '../../services/api.service';
+import { AuthService } from '../../services/auth.service';
+import { ConfirmService } from '../../services/confirm.service';
 
 interface TDevice {
   readonly deviceId: string;
   readonly name: string;
   readonly type: string;
   readonly status: string;
+  readonly enabled: boolean;
   readonly assignedIp: string;
   readonly ownerEmail: string | null;
 }
@@ -14,6 +17,7 @@ interface TSpark {
   readonly nodeId: string;
   readonly name: string;
   readonly status: string;
+  readonly paused: boolean;
   readonly adoptionStatus: string;
   readonly shared: boolean;
   readonly ownerEmail: string | null;
@@ -22,6 +26,8 @@ interface TSpark {
 interface TUser {
   readonly email: string;
   readonly role: string;
+  readonly username?: string | null;
+  readonly enabled?: boolean | null;
   readonly isSelf: boolean;
   readonly sparks: readonly TSpark[];
 }
@@ -125,7 +131,54 @@ const X_GAP = 175;
                   </div>
                 }
               </div>
-              <div class="detail-note">Editing &amp; actions arrive in the next update.</div>
+
+              @if (actionError()) { <div class="action-error">{{ actionError() }}</div> }
+
+              <!-- Spark actions -->
+              @if (sel.kind === 'spark' && asSpark(sel); as s) {
+                @if (canManageSpark(s)) {
+                  <div class="detail-section">
+                    <label class="edit-label">Name</label>
+                    <div class="edit-row">
+                      <input class="edit-input" [value]="s.name" #snm />
+                      <button class="btn-sm secondary" (click)="saveSparkName(s, snm.value)" [disabled]="busy()">Save</button>
+                    </div>
+                  </div>
+                  <div class="detail-actions">
+                    <button class="btn-sm secondary" (click)="togglePause(s)" [disabled]="busy()">{{ s.paused ? 'Resume' : 'Pause' }}</button>
+                    <button class="btn-sm secondary" (click)="createVpn(s)" [disabled]="busy()">{{ s.status === 'online' ? 'Recreate VPN' : 'Create VPN' }}</button>
+                    <button class="btn-sm danger" (click)="deleteSpark(s)" [disabled]="busy()">Delete spark</button>
+                  </div>
+                } @else {
+                  <div class="detail-note">You can view this spark but not manage it.</div>
+                }
+              }
+
+              <!-- Device actions -->
+              @if (sel.kind === 'device' && asDevice(sel); as d) {
+                @if (canManageDevice(d)) {
+                  <div class="detail-actions">
+                    <button class="btn-sm secondary" (click)="toggleDevice(d)" [disabled]="busy()">{{ d.enabled ? 'Disable' : 'Enable' }}</button>
+                    <button class="btn-sm secondary" (click)="syncDevice(d)" [disabled]="busy()">Sync to sparks</button>
+                    <button class="btn-sm danger" (click)="deleteDevice(d)" [disabled]="busy()">Delete device</button>
+                  </div>
+                } @else {
+                  <div class="detail-note">You can view this device but not manage it.</div>
+                }
+              }
+
+              <!-- User actions -->
+              @if (sel.kind === 'user' && asUser(sel); as u) {
+                @if (canManageUser(u)) {
+                  <div class="detail-actions">
+                    <button class="btn-sm secondary" (click)="toggleUser(u)" [disabled]="busy()">{{ u.enabled ? 'Disable' : 'Enable' }}</button>
+                    <button class="btn-sm danger" (click)="deleteUser(u)" [disabled]="busy()">Delete user</button>
+                  </div>
+                  <div class="detail-note">Role &amp; password are managed on the Users page.</div>
+                } @else if (u.isSelf) {
+                  <div class="detail-note">This is you.</div>
+                }
+              }
             </aside>
           }
         </div>
@@ -175,16 +228,34 @@ const X_GAP = 175;
     .dvalue { font-size: 0.75rem; color: var(--text-primary); text-align: right; word-break: break-word; }
     .dvalue.mono { font-family: ui-monospace, monospace; }
     .detail-note { margin-top: 1rem; font-size: 0.68rem; color: var(--text-tertiary); font-style: italic; }
+    .action-error { margin-top: 0.8rem; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.72rem; color: var(--danger, #ef4444); background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent); }
+    .detail-section { margin-top: 1rem; }
+    .edit-label { display: block; font-size: 0.68rem; color: var(--text-tertiary); margin-bottom: 0.3rem; }
+    .edit-row { display: flex; gap: 0.4rem; }
+    .edit-input { flex: 1; padding: 0.35rem 0.5rem; background: var(--bg-base, var(--bg-surface)); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 0.78rem; min-width: 0; }
+    .detail-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 1rem; }
+    .btn-sm { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 0.75rem; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s ease; }
+    .btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm.secondary { background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); }
+    .btn-sm.secondary:hover { background: var(--sidebar-hover); }
+    .btn-sm.danger { background: var(--bg-input); color: var(--danger, #ef4444); border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, transparent); }
+    .btn-sm.danger:hover { background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent); }
     .icon-btn { display: inline-flex; padding: 4px; background: transparent; border: none; border-radius: 5px; color: var(--text-tertiary); cursor: pointer; }
     .icon-btn:hover { background: color-mix(in srgb, var(--text-tertiary) 15%, transparent); }
   `],
 })
 export class TopologyPage implements OnInit {
   private api = inject(ApiService);
+  private auth = inject(AuthService);
+  private confirm = inject(ConfirmService);
 
   topology = signal<Topology | null>(null);
   loading = signal(true);
   error = signal<string | null>(null);
+  busy = signal(false);
+  actionError = signal<string | null>(null);
+
+  private myEmail = computed(() => this.auth.user()?.email ?? '');
 
   nodes = signal<GraphNode[]>([]);
   edges = signal<GraphEdge[]>([]);
@@ -367,6 +438,83 @@ export class TopologyPage implements OnInit {
       ];
     }
     return [];
+  }
+
+  // ── Type helpers for the template ────────────────────────────────
+  asSpark(n: GraphNode): TSpark { return n.data as TSpark; }
+  asDevice(n: GraphNode): TDevice { return n.data as TDevice; }
+  asUser(n: GraphNode): TUser { return n.data as TUser; }
+
+  // ── Permissions (backend enforces too; this hides what you can't do) ──
+  canManageSpark(s: TSpark): boolean {
+    return this.auth.isSuperadmin() || (!!s.ownerEmail && s.ownerEmail === this.myEmail());
+  }
+  canManageDevice(d: TDevice): boolean {
+    return this.auth.isSuperadmin() || (!!d.ownerEmail && d.ownerEmail === this.myEmail());
+  }
+  canManageUser(u: TUser): boolean {
+    return this.auth.isSuperadmin() && !u.isSelf && !!u.username;
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────
+  private async act(fn: () => Promise<unknown>, keepId: string | null): Promise<void> {
+    if (this.busy()) return;
+    this.busy.set(true);
+    this.actionError.set(null);
+    try {
+      await fn();
+      await this.reload(keepId ?? undefined);
+    } catch {
+      this.actionError.set('Action failed — you may not have permission, or the spark is offline.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // Re-fetch after an action, preserving node positions and the current pan/zoom so the
+  // graph doesn't jump, and re-select the same node if it still exists.
+  private async reload(keepId?: string): Promise<void> {
+    const prevPos = new Map(this.nodes().map((n) => [n.id, { x: n.x, y: n.y }]));
+    const prevT = this.t();
+    const t = await this.api.get<Topology>('/topology');
+    this.topology.set(t);
+    this.buildGraph(t);
+    this.t.set(prevT);
+    this.nodes.update((list) => list.map((n) => { const p = prevPos.get(n.id); return p ? { ...n, x: p.x, y: p.y } : n; }));
+    this.selected.set(keepId ? (this.nodes().find((x) => x.id === keepId) ?? null) : null);
+  }
+
+  async saveSparkName(s: TSpark, name: string): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === s.name) return;
+    await this.act(() => this.api.put(`/nodes/${s.nodeId}`, { name: trimmed }), 's:' + s.nodeId);
+  }
+  async togglePause(s: TSpark): Promise<void> {
+    await this.act(() => this.api.post(`/nodes/${s.nodeId}/${s.paused ? 'resume' : 'pause'}`), 's:' + s.nodeId);
+  }
+  async createVpn(s: TSpark): Promise<void> {
+    await this.act(() => this.api.post(`/nodes/${s.nodeId}/create-vpn`), 's:' + s.nodeId);
+  }
+  async deleteSpark(s: TSpark): Promise<void> {
+    const ok = await this.confirm.confirm({ title: 'Delete Spark', message: `Delete "${s.name}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true });
+    if (ok) await this.act(() => this.api.delete(`/nodes/${s.nodeId}`), null);
+  }
+  async toggleDevice(d: TDevice): Promise<void> {
+    await this.act(() => this.api.put(`/devices/${d.deviceId}`, { enabled: !d.enabled }), 'd:' + d.deviceId);
+  }
+  async syncDevice(d: TDevice): Promise<void> {
+    await this.act(() => this.api.post(`/devices/${d.deviceId}/sync`), 'd:' + d.deviceId);
+  }
+  async deleteDevice(d: TDevice): Promise<void> {
+    const ok = await this.confirm.confirm({ title: 'Delete Device', message: `Delete "${d.name}"?`, confirmLabel: 'Delete', danger: true });
+    if (ok) await this.act(() => this.api.delete(`/devices/${d.deviceId}`), null);
+  }
+  async toggleUser(u: TUser): Promise<void> {
+    await this.act(() => this.api.put(`/users/${u.username}`, { enabled: !u.enabled }), 'u:' + u.email);
+  }
+  async deleteUser(u: TUser): Promise<void> {
+    const ok = await this.confirm.confirm({ title: 'Delete User', message: `Delete user "${u.email}"?`, confirmLabel: 'Delete', danger: true });
+    if (ok) await this.act(() => this.api.delete(`/users/${u.username}`), null);
   }
 
   iconFor(kind: NodeKind): string {
