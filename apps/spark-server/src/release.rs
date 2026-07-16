@@ -50,7 +50,9 @@ pub fn spawn_refresh(cache: LatestVersion) {
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+            // Re-check every 10 min so a freshly published release surfaces promptly.
+            // Unauthenticated GitHub allows 60 req/h per IP — 6/h here is well within it.
+            tokio::time::sleep(Duration::from_secs(10 * 60)).await;
         }
     });
 }

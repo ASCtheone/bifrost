@@ -79,6 +79,11 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
                       {{ update.sparkUpdates().length }} spark{{ update.sparkUpdates().length > 1 ? 's' : '' }} can be updated →
                     </button>
                   }
+                  <div class="dropdown-divider"></div>
+                  <button class="notif-check" (click)="update.checkNow()" [disabled]="update.checking()">
+                    <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true" [class.spin]="update.checking()"></fa-icon>
+                    {{ update.checking() ? 'Checking…' : 'Check for updates' }}
+                  </button>
                 </div>
               }
             </div>
@@ -230,6 +235,9 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
     .notif-badge { position: absolute; top: -2px; right: -2px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
     .notif-center { right: 0; left: auto; min-width: 260px; }
     .notif-empty { padding: 0.7rem 0.9rem; font-size: 0.78rem; color: var(--text-tertiary); }
+    .notif-check { display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.55rem 0.9rem; background: none; border: none; cursor: pointer; font-size: 0.78rem; color: var(--text-secondary); }
+    .notif-check:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+    .notif-check:disabled { cursor: default; opacity: 0.7; }
     .notif-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; }
     .notif-item fa-icon { color: var(--accent); }
     .notif-title { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); }
@@ -384,12 +392,14 @@ export class App implements OnInit, OnDestroy {
     // Simple interval-based check (replaces onAuthStateChanged)
     this.authCheckTimer = setInterval(checkAuth, 2000);
 
-    this.router.events.subscribe(() => {
+    const syncRoute = () => {
       const url = this.router.url;
       this.pageTitle.set(this.routeTitles[url] ?? 'Dashboard');
       // The topology view is full-bleed — it fills the content area with no padding.
       this.fullBleed.set(url.split('?')[0].startsWith('/topology'));
-    });
+    };
+    syncRoute(); // handle a direct load / reload already sitting on /topology
+    this.router.events.subscribe(syncRoute);
   }
 
   private authCheckTimer: ReturnType<typeof setInterval> | null = null;

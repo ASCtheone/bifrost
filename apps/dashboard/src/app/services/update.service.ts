@@ -80,6 +80,22 @@ export class UpdateService {
     }, 3000);
   }
 
+  readonly checking = signal(false);
+
+  // Force an immediate online re-check (GitHub) for both the dashboard and the sparks,
+  // so the user never has to wait for the background poll after publishing a release.
+  async checkNow(): Promise<void> {
+    if (this.checking()) return;
+    this.checking.set(true);
+    try {
+      this.dashboard.set(await this.api.get<VersionInfo>('/version?refresh=1'));
+    } catch {
+      /* leave the last-known value */
+    }
+    await this.refresh();
+    this.checking.set(false);
+  }
+
   start(): void {
     if (this.timer) return;
     void this.refresh();
