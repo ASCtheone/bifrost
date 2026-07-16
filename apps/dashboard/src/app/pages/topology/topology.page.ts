@@ -97,15 +97,17 @@ const X_GAP = 175;
                      class="gnode" [class]="n.kind"
                      [class.selected]="selected()?.id === n.id"
                      (mousedown)="onNodeDown($event, n)">
-                    <rect [attr.x]="-nodeW(n)/2" [attr.y]="-22" [attr.width]="nodeW(n)" height="44" rx="10" class="nbox" />
+                    <circle r="22" class="node-circle" />
+                    <foreignObject x="-13" y="-13" width="26" height="26">
+                      <span xmlns="http://www.w3.org/1999/xhtml" class="fo-ic"><fa-icon [icon]="['fal', iconFor(n.kind)]"></fa-icon></span>
+                    </foreignObject>
                     @if (n.status) {
-                      <circle [attr.cx]="-nodeW(n)/2 + 14" cy="0" r="5" [attr.class]="'sdot ' + statusClass(n.status)" />
+                      <circle cx="16" cy="-16" r="5" [attr.class]="'sdot ' + statusClass(n.status)" />
                     }
-                    <text [attr.x]="n.status ? -nodeW(n)/2 + 26 : -nodeW(n)/2 + 14" y="-2" class="ntitle">{{ n.label }}</text>
-                    <text [attr.x]="n.status ? -nodeW(n)/2 + 26 : -nodeW(n)/2 + 14" y="12" class="nsub">{{ n.sub }}</text>
                     @if (n.shared) {
-                      <text [attr.x]="nodeW(n)/2 - 10" y="-8" class="ntag" text-anchor="end">shared</text>
+                      <circle cx="-16" cy="-16" r="5" class="sdot shared-dot" />
                     }
+                    <text y="40" text-anchor="middle" class="nlabel">{{ trunc(n.label) }}</text>
                   </g>
                 }
               </g>
@@ -133,9 +135,6 @@ const X_GAP = 175;
                     <button class="qbtn" (click)="createVpn(s)" [disabled]="busy()" [title]="s.status === 'online' ? 'Recreate VPN' : 'Create VPN'">
                       <fa-icon [icon]="['fal', 'bolt']" [fixedWidth]="true"></fa-icon>
                     </button>
-                    <button class="qbtn danger" (click)="deleteSpark(s)" [disabled]="busy()" title="Delete spark">
-                      <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
-                    </button>
                   }
                   @if (sel.kind === 'device' && asDevice(sel); as d) {
                     <button class="qbtn" (click)="toggleDevice(d)" [disabled]="busy()" [title]="d.enabled ? 'Disable' : 'Enable'">
@@ -144,16 +143,10 @@ const X_GAP = 175;
                     <button class="qbtn" (click)="syncDevice(d)" [disabled]="busy()" title="Sync to sparks">
                       <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
                     </button>
-                    <button class="qbtn danger" (click)="deleteDevice(d)" [disabled]="busy()" title="Delete device">
-                      <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
-                    </button>
                   }
                   @if (sel.kind === 'user' && asUser(sel); as u) {
                     <button class="qbtn" (click)="toggleUser(u)" [disabled]="busy()" [title]="u.enabled ? 'Disable' : 'Enable'">
                       <fa-icon [icon]="['fal', u.enabled ? 'ban' : 'circle-check']" [fixedWidth]="true"></fa-icon>
-                    </button>
-                    <button class="qbtn danger" (click)="deleteUser(u)" [disabled]="busy()" title="Delete user">
-                      <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
                     </button>
                   }
                 </div>
@@ -170,45 +163,38 @@ const X_GAP = 175;
 
               @if (actionError()) { <div class="action-error">{{ actionError() }}</div> }
 
-              <!-- Spark actions -->
+              <!-- Editable fields (Save appears only when modified) + Delete, pinned bottom -->
               @if (sel.kind === 'spark' && asSpark(sel); as s) {
                 @if (canManageSpark(s)) {
                   <div class="detail-section">
                     <label class="edit-label">Name</label>
-                    <div class="edit-row">
-                      <input class="edit-input" [value]="s.name" #snm />
-                      <button class="btn-sm secondary" (click)="saveSparkName(s, snm.value)" [disabled]="busy()">Save</button>
-                    </div>
+                    <input class="edit-input" [value]="s.name" #snm (input)="0" />
                   </div>
-                  <div class="detail-actions">
-                    <button class="btn-sm secondary" (click)="togglePause(s)" [disabled]="busy()">{{ s.paused ? 'Resume' : 'Pause' }}</button>
-                    <button class="btn-sm secondary" (click)="createVpn(s)" [disabled]="busy()">{{ s.status === 'online' ? 'Recreate VPN' : 'Create VPN' }}</button>
-                    <button class="btn-sm danger" (click)="deleteSpark(s)" [disabled]="busy()">Delete spark</button>
+                  <div class="detail-footer">
+                    @if (snm.value.trim() && snm.value.trim() !== s.name) {
+                      <button class="btn-sm accent" (click)="saveSparkName(s, snm.value)" [disabled]="busy()">Save</button>
+                    }
+                    <button class="btn-sm danger" (click)="deleteSpark(s)" [disabled]="busy()">Delete</button>
                   </div>
                 } @else {
                   <div class="detail-note">You can view this spark but not manage it.</div>
                 }
               }
 
-              <!-- Device actions -->
               @if (sel.kind === 'device' && asDevice(sel); as d) {
                 @if (canManageDevice(d)) {
-                  <div class="detail-actions">
-                    <button class="btn-sm secondary" (click)="toggleDevice(d)" [disabled]="busy()">{{ d.enabled ? 'Disable' : 'Enable' }}</button>
-                    <button class="btn-sm secondary" (click)="syncDevice(d)" [disabled]="busy()">Sync to sparks</button>
-                    <button class="btn-sm danger" (click)="deleteDevice(d)" [disabled]="busy()">Delete device</button>
+                  <div class="detail-footer">
+                    <button class="btn-sm danger" (click)="deleteDevice(d)" [disabled]="busy()">Delete</button>
                   </div>
                 } @else {
                   <div class="detail-note">You can view this device but not manage it.</div>
                 }
               }
 
-              <!-- User actions -->
               @if (sel.kind === 'user' && asUser(sel); as u) {
                 @if (canManageUser(u)) {
-                  <div class="detail-actions">
-                    <button class="btn-sm secondary" (click)="toggleUser(u)" [disabled]="busy()">{{ u.enabled ? 'Disable' : 'Enable' }}</button>
-                    <button class="btn-sm danger" (click)="deleteUser(u)" [disabled]="busy()">Delete user</button>
+                  <div class="detail-footer">
+                    <button class="btn-sm danger" (click)="deleteUser(u)" [disabled]="busy()">Delete</button>
                   </div>
                   <div class="detail-note">Role &amp; password are managed on the Users page.</div>
                 } @else if (u.isSelf) {
@@ -242,17 +228,18 @@ const X_GAP = 175;
 
     .edge { stroke: var(--border); stroke-width: 1.5; }
     .gnode { cursor: pointer; }
-    .nbox { fill: var(--bg-surface); stroke: var(--border); stroke-width: 1; }
-    .gnode.root .nbox { fill: color-mix(in srgb, var(--accent) 14%, var(--bg-surface)); stroke: var(--accent); }
-    .gnode.user .nbox { stroke: color-mix(in srgb, var(--accent) 50%, var(--border)); }
-    .gnode.selected .nbox { stroke: var(--accent); stroke-width: 2; }
-    .ntitle { font-size: 11px; font-weight: 600; fill: var(--text-primary); }
-    .nsub { font-size: 9px; fill: var(--text-tertiary); }
-    .ntag { font-size: 8px; font-weight: 700; fill: var(--warning, #f59e0b); text-transform: uppercase; }
-    .sdot { stroke: none; }
+    .node-circle { fill: var(--bg-surface); stroke: var(--border); stroke-width: 1.5; transition: stroke 0.12s ease; }
+    .gnode.root .node-circle { fill: color-mix(in srgb, var(--accent) 16%, var(--bg-surface)); stroke: var(--accent); }
+    .gnode.user .node-circle { stroke: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+    .gnode.selected .node-circle { stroke: var(--accent); stroke-width: 2.5; }
+    .fo-ic { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; font-size: 13px; color: var(--text-secondary); }
+    .gnode.root .fo-ic, .gnode.user .fo-ic { color: var(--accent); }
+    .nlabel { font-size: 11px; font-weight: 600; fill: var(--text-primary); }
+    .sdot { stroke: var(--bg-surface); stroke-width: 1.5; }
     .sdot.online { fill: var(--success, #22c55e); }
     .sdot.warn { fill: var(--warning, #f59e0b); }
     .sdot.offline { fill: var(--text-disabled, #9ca3af); }
+    .shared-dot { fill: var(--warning, #f59e0b); }
 
     .detail-panel { width: 320px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); padding: 1rem; overflow-y: auto; }
     .detail-head { display: flex; align-items: center; justify-content: space-between; }
@@ -273,14 +260,13 @@ const X_GAP = 175;
     .action-error { margin-top: 0.8rem; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.72rem; color: var(--danger, #ef4444); background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent); }
     .detail-section { margin-top: 1rem; }
     .edit-label { display: block; font-size: 0.68rem; color: var(--text-tertiary); margin-bottom: 0.3rem; }
-    .edit-row { display: flex; gap: 0.4rem; }
-    .edit-input { flex: 1; padding: 0.35rem 0.5rem; background: var(--bg-base, var(--bg-surface)); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 0.78rem; min-width: 0; }
-    .detail-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 1rem; }
-    .btn-sm { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 0.75rem; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s ease; }
+    .edit-input { width: 100%; padding: 0.4rem 0.55rem; background: var(--bg-base, var(--bg-surface)); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); font-size: 0.8rem; box-sizing: border-box; }
+    .detail-footer { display: flex; gap: 0.4rem; margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+    .btn-sm { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.4rem 0.9rem; border-radius: 6px; font-size: 0.75rem; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s ease; }
     .btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-sm.secondary { background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); }
-    .btn-sm.secondary:hover { background: var(--sidebar-hover); }
-    .btn-sm.danger { background: var(--bg-input); color: var(--danger, #ef4444); border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, transparent); }
+    .btn-sm.accent { background: var(--accent); color: #fff; }
+    .btn-sm.accent:hover { filter: brightness(1.08); }
+    .btn-sm.danger { background: var(--bg-input); color: var(--danger, #ef4444); border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, transparent); margin-left: auto; }
     .btn-sm.danger:hover { background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent); }
     .icon-btn { display: inline-flex; padding: 4px; background: transparent; border: none; border-radius: 5px; color: var(--text-tertiary); cursor: pointer; }
     .icon-btn:hover { background: color-mix(in srgb, var(--text-tertiary) 15%, transparent); }
@@ -376,9 +362,9 @@ export class TopologyPage implements OnInit {
     this.t.set({ x: 400 - mid, y: 20, k: 1 });
   }
 
-  nodeW(n: GraphNode): number {
-    const len = Math.max(n.label.length, n.sub.length);
-    return Math.min(220, Math.max(120, len * 7 + (n.status ? 30 : 20)));
+  // Keep node labels short enough not to overlap neighbours; full value is in the panel.
+  trunc(label: string): string {
+    return label.length > 20 ? label.slice(0, 19) + '…' : label;
   }
 
   // ── Interaction ─────────────────────────────────────────────────
