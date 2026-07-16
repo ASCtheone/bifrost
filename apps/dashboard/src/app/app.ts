@@ -4,6 +4,7 @@ import { FaIconComponent } from '@fortawesome/angular-fontawesome';
 import { AuthService } from './services/auth.service';
 import { ThemeService, type ThemeMode } from './services/theme.service';
 import { ConfirmService } from './services/confirm.service';
+import { UpdateService } from './services/update.service';
 import { gravatarUrl as getGravatarUrl } from './utils/md5';
 
 @Component({
@@ -20,6 +21,36 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
           </div>
           <div class="top-spacer"></div>
           <div class="top-right">
+            <div class="notif-menu">
+              <button class="top-btn" (click)="notifOpen.set(!notifOpen())" title="Updates">
+                <fa-icon [icon]="['fal', 'bell']" [fixedWidth]="true"></fa-icon>
+                @if (update.count() > 0) { <span class="notif-badge">{{ update.count() }}</span> }
+              </button>
+              @if (notifOpen()) {
+                <div class="dropdown notif-center" (click)="$event.stopPropagation()">
+                  <div class="dropdown-header"><div class="dropdown-email">Updates</div></div>
+                  <div class="dropdown-divider"></div>
+                  @if (update.count() === 0) {
+                    <div class="notif-empty">Everything's up to date.</div>
+                  }
+                  @if (update.dashboardUpdate(); as d) {
+                    <div class="notif-item">
+                      <fa-icon [icon]="['fal', 'grid-2']" [fixedWidth]="true"></fa-icon>
+                      <div>
+                        <div class="notif-title">Dashboard update available</div>
+                        <div class="notif-sub">v{{ d.current }} → v{{ d.latest }}</div>
+                      </div>
+                    </div>
+                  }
+                  @if (update.sparkUpdates().length) {
+                    <button class="dropdown-item" (click)="goToSparks()">
+                      <fa-icon [icon]="['fal', 'server']" [fixedWidth]="true"></fa-icon>
+                      {{ update.sparkUpdates().length }} spark{{ update.sparkUpdates().length > 1 ? 's' : '' }} can be updated →
+                    </button>
+                  }
+                </div>
+              }
+            </div>
             <button class="top-btn" (click)="toggleTheme()" [title]="theme.resolved() === 'dark' ? 'Switch to light' : 'Switch to dark'">
               <fa-icon [icon]="['fal', theme.resolved() === 'dark' ? 'moon' : 'sun-bright']" [fixedWidth]="true"></fa-icon>
             </button>
@@ -48,6 +79,21 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
             </div>
           </div>
         </header>
+
+        <!-- Update notification bar -->
+        @if (update.count() > 0 && !barDismissed()) {
+          <div class="update-bar">
+            <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
+            <span class="update-bar-text">
+              @if (update.dashboardUpdate(); as d) { Dashboard update available (v{{ d.latest }}).&nbsp; }
+              @if (update.sparkUpdates().length) { {{ update.sparkUpdates().length }} spark{{ update.sparkUpdates().length > 1 ? 's' : '' }} can be updated. }
+            </span>
+            @if (update.sparkUpdates().length) {
+              <button class="update-bar-btn" (click)="goToSparks()">Update sparks →</button>
+            }
+            <button class="update-bar-close" (click)="barDismissed.set(true)" title="Dismiss">✕</button>
+          </div>
+        }
 
         <!-- Below top bar: sidebar + content -->
         <div class="below-bar">
@@ -131,6 +177,21 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
       transition: all 0.15s ease;
     }
     .top-btn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+    .notif-menu { position: relative; }
+    .notif-badge { position: absolute; top: -2px; right: -2px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .notif-center { right: 0; left: auto; min-width: 260px; }
+    .notif-empty { padding: 0.7rem 0.9rem; font-size: 0.78rem; color: var(--text-tertiary); }
+    .notif-item { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.9rem; }
+    .notif-item fa-icon { color: var(--accent); }
+    .notif-title { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); }
+    .notif-sub { font-size: 0.7rem; color: var(--text-tertiary); font-family: ui-monospace, monospace; }
+    .update-bar { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.9rem; background: color-mix(in srgb, var(--accent) 14%, var(--topbar-bg)); border-bottom: 1px solid var(--border); font-size: 0.8rem; color: var(--text-primary); }
+    .update-bar > fa-icon { color: var(--accent); }
+    .update-bar-text { flex: 1; }
+    .update-bar-btn { padding: 3px 12px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 600; cursor: pointer; }
+    .update-bar-btn:hover { filter: brightness(1.08); }
+    .update-bar-close { background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 0.85rem; padding: 2px 6px; }
+    .update-bar-close:hover { color: var(--text-primary); }
     .avatar-menu { position: relative; }
     .avatar-btn {
       display: flex; align-items: center; justify-content: center;
@@ -218,10 +279,13 @@ export class App implements OnInit, OnDestroy {
   private readonly router = inject(Router);
   readonly theme = inject(ThemeService);
   readonly confirmService = inject(ConfirmService);
+  readonly update = inject(UpdateService);
 
   loggedIn = signal(false);
   pageTitle = signal('Dashboard');
   menuOpen = signal(false);
+  notifOpen = signal(false);
+  barDismissed = signal(false);
   userEmail = signal('');
   userInitials = signal('');
   gravatarUrl = signal('');
@@ -239,6 +303,7 @@ export class App implements OnInit, OnDestroy {
     this.loggedIn.set(!!user);
     if (user) {
       this.setUserInfo(user.email);
+      this.update.start();
     }
     // Watch for auth changes. Only kick unauthenticated users off *protected*
     // routes — the landing, login and setup pages are public.
@@ -247,8 +312,10 @@ export class App implements OnInit, OnDestroy {
       this.loggedIn.set(!!u);
       if (u) {
         this.setUserInfo(u.email);
-      } else if (!this.isPublicRoute()) {
-        this.router.navigate(['/login']);
+        this.update.start();
+      } else {
+        this.update.stop();
+        if (!this.isPublicRoute()) this.router.navigate(['/login']);
       }
     };
 
@@ -272,6 +339,12 @@ export class App implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.authCheckTimer) clearInterval(this.authCheckTimer);
+    this.update.stop();
+  }
+
+  goToSparks(): void {
+    this.notifOpen.set(false);
+    this.router.navigate(['/sparks']);
   }
 
   private setUserInfo(email: string): void {
