@@ -197,34 +197,82 @@ async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> Vec<Va
     for cmd in commands {
         let id = cmd.get("id").and_then(Value::as_str).unwrap_or("").to_string();
         let kind = cmd.get("kind").and_then(Value::as_str).unwrap_or("");
-        let outcome: Result<()> = match kind {
+        let sid = cmd.get("serverId").and_then(Value::as_str).unwrap_or_default();
+        // Ok carries any data to hand back (a created peer's config); Null otherwise.
+        let outcome: Result<Value> = match kind {
             "server.create" => {
                 let name = cmd.get("name").and_then(Value::as_str).unwrap_or("New VPN");
                 let subnet = cmd.get("subnet").and_then(Value::as_str);
                 let port = cmd.get("port").and_then(Value::as_i64);
-                unifi.create_wg_server(name, subnet, port).await.map(|_| ())
+                unifi.create_wg_server(name, subnet, port).await.map(|_| Value::Null)
             }
-            "server.update" => {
-                let sid = cmd.get("serverId").and_then(Value::as_str).unwrap_or_default();
+            "server.update" => unifi
+                .update_wg_server(
+                    sid,
+                    cmd.get("name").and_then(Value::as_str),
+                    cmd.get("port").and_then(Value::as_i64),
+                    cmd.get("enabled").and_then(Value::as_bool),
+                )
+                .await
+                .map(|_| Value::Null),
+            "server.delete" => unifi.delete_wg_server(sid).await.map(|_| Value::Null),
+            "peer.create" => {
+                let name = sanitize_peer_name(cmd.get("name").and_then(Value::as_str).unwrap_or("client"));
+                let allowed = allowed_ips_of(cmd);
                 unifi
-                    .update_wg_server(
+                    .create_client_peer(
                         sid,
-                        cmd.get("name").and_then(Value::as_str),
-                        cmd.get("port").and_then(Value::as_i64),
-                        cmd.get("enabled").and_then(Value::as_bool),
+                        &name,
+                        cmd.get("publicKey").and_then(Value::as_str),
+                        cmd.get("ip").and_then(Value::as_str),
+                        allowed,
                     )
                     .await
+                    .map(|(ip, pubk, privk)| {
+                        let mut p = json!({ "serverId": sid, "ip": ip, "publicKey": pubk });
+                        // The private key is present only when the spark generated it — the
+                        // dashboard uses it to build the client config, then it's gone.
+                        if let Some(pk) = privk {
+                            p["privateKey"] = json!(pk);
+                        }
+                        p
+                    })
             }
-            "server.delete" => {
-                let sid = cmd.get("serverId").and_then(Value::as_str).unwrap_or_default();
-                unifi.delete_wg_server(sid).await
+            // Update = delete + recreate preserving the client's public key, so only the
+            // verified peer endpoints are used (no unverified peer PUT) and the client's
+            // keypair survives a rename or re-address.
+            "peer.update" => {
+                let peer_id = cmd.get("peerId").and_then(Value::as_str).unwrap_or_default();
+                match cmd.get("publicKey").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    None => Err(anyhow::anyhow!(
+                        "peer.update needs the existing publicKey to preserve the client's key"
+                    )),
+                    Some(pubk) => match unifi.delete_peer(sid, peer_id).await {
+                        Err(e) => Err(e),
+                        Ok(()) => {
+                            let name = sanitize_peer_name(cmd.get("name").and_then(Value::as_str).unwrap_or("client"));
+                            unifi
+                                .create_client_peer(sid, &name, Some(pubk), cmd.get("ip").and_then(Value::as_str), allowed_ips_of(cmd))
+                                .await
+                                .map(|_| Value::Null)
+                        }
+                    },
+                }
+            }
+            "peer.delete" => {
+                let peer_id = cmd.get("peerId").and_then(Value::as_str).unwrap_or_default();
+                unifi.delete_peer(sid, peer_id).await.map(|_| Value::Null)
             }
             other => Err(anyhow::anyhow!("unknown command kind: {other}")),
         };
         match outcome {
-            Ok(()) => {
+            Ok(data) => {
                 tracing::info!(%id, %kind, "executed management command");
-                results.push(json!({ "id": id, "ok": true }));
+                let mut r = json!({ "id": id, "ok": true });
+                if !data.is_null() {
+                    r["peer"] = data;
+                }
+                results.push(r);
             }
             Err(e) => {
                 tracing::warn!(%id, %kind, "management command failed: {e:#}");
@@ -233,6 +281,15 @@ async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> Vec<Va
         }
     }
     results
+}
+
+/// A command's `allowedIps`, or empty (which `create_client_peer` turns into the peer's
+/// own `/32` — the correct server-side value, not `0.0.0.0/0`).
+fn allowed_ips_of(cmd: &Value) -> Vec<String> {
+    cmd.get("allowedIps")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 /// The name a peer gets on the controller.
@@ -259,6 +316,30 @@ fn peer_name(device_name: &str) -> String {
     let capped = capped.trim_end_matches('-').to_string();
     if capped == "bifrost" {
         "bifrost-device".to_string() // a name of nothing but separators
+    } else {
+        capped
+    }
+}
+
+/// Sanitise a free-text name into what UniFi accepts for a WireGuard peer — the same
+/// [A-Za-z0-9._-] rule as `peer_name`, but with no `bifrost-` prefix (these are
+/// operator-created clients, not bifrost devices). Empty result → "client".
+fn sanitize_peer_name(name: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = true; // trims leading separators
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let capped: String = out.trim_matches('-').chars().take(48).collect();
+    let capped = capped.trim_end_matches('-').to_string();
+    if capped.is_empty() {
+        "client".to_string()
     } else {
         capped
     }
@@ -530,12 +611,20 @@ async fn heartbeat(
 
 #[cfg(test)]
 mod tests {
-    use super::peer_name;
+    use super::{peer_name, sanitize_peer_name};
 
     #[test]
     fn spaces_become_dashes() {
         // The exact name that got a bare 400 from the controller.
         assert_eq!(peer_name("Miguel Router"), "bifrost-Miguel-Router");
+    }
+
+    #[test]
+    fn sanitize_peer_name_has_no_prefix_and_falls_back() {
+        // Operator-created clients: sanitised the same way, but without the bifrost- prefix.
+        assert_eq!(sanitize_peer_name("My Phone"), "My-Phone");
+        assert_eq!(sanitize_peer_name("  a // b "), "a-b");
+        assert_eq!(sanitize_peer_name("!!!"), "client");
     }
 
     #[test]

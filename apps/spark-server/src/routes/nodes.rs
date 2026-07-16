@@ -27,6 +27,9 @@ pub fn routes() -> Router<AppState> {
         // WireGuard server CRUD — enqueued as commands the spark executes on the controller.
         .route("/nodes/:nodeId/servers", post(create_server))
         .route("/nodes/:nodeId/servers/:serverId", put(update_server).delete(delete_server))
+        // WireGuard client/peer CRUD on a given server — also enqueued as commands.
+        .route("/nodes/:nodeId/servers/:serverId/peers", post(create_wg_peer))
+        .route("/nodes/:nodeId/servers/:serverId/peers/:peerId", put(update_wg_peer).delete(delete_wg_peer))
         .route("/nodes/:nodeId/revoke", post(revoke_node))
         .route("/nodes/:nodeId/delete-peer", post(delete_node_peer))
         .route("/nodes/:nodeId/role", put(set_node_role))
@@ -462,6 +465,85 @@ async fn delete_server(
         &st,
         &node_id,
         json!({ "id": util::ulid(), "kind": "server.delete", "serverId": server_id }),
+    )
+    .await
+}
+
+// ── WireGuard client/peer CRUD (enqueued commands) ──────────────
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CreatePeerReq {
+    name: Option<String>,
+    /// The client's public key. Absent → the spark generates a keypair and returns the
+    /// private key in the command result so the dashboard can build the client config.
+    public_key: Option<String>,
+    /// Tunnel IP; the spark auto-picks a free one in the server's subnet when absent.
+    ip: Option<String>,
+    allowed_ips: Option<Vec<String>>,
+}
+
+async fn create_wg_peer(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path((node_id, server_id)): Path<(String, String)>,
+    body: Option<Json<CreatePeerReq>>,
+) -> AppResult<Json<Value>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    enqueue(
+        &st,
+        &node_id,
+        json!({
+            "id": util::ulid(), "kind": "peer.create", "serverId": server_id,
+            "name": req.name.unwrap_or_else(|| "client".into()),
+            "publicKey": req.public_key, "ip": req.ip, "allowedIps": req.allowed_ips,
+        }),
+    )
+    .await
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePeerReq {
+    name: Option<String>,
+    ip: Option<String>,
+    /// Required — the existing public key, so the spark preserves the client's keypair
+    /// across the rename/re-address (which it does as delete-then-recreate).
+    public_key: Option<String>,
+    allowed_ips: Option<Vec<String>>,
+}
+
+async fn update_wg_peer(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path((node_id, server_id, peer_id)): Path<(String, String, String)>,
+    body: Option<Json<UpdatePeerReq>>,
+) -> AppResult<Json<Value>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let public_key = req
+        .public_key
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::BadRequest("publicKey is required to update a peer".into()))?;
+    enqueue(
+        &st,
+        &node_id,
+        json!({
+            "id": util::ulid(), "kind": "peer.update", "serverId": server_id, "peerId": peer_id,
+            "publicKey": public_key, "name": req.name, "ip": req.ip, "allowedIps": req.allowed_ips,
+        }),
+    )
+    .await
+}
+
+async fn delete_wg_peer(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path((node_id, server_id, peer_id)): Path<(String, String, String)>,
+) -> AppResult<Json<Value>> {
+    enqueue(
+        &st,
+        &node_id,
+        json!({ "id": util::ulid(), "kind": "peer.delete", "serverId": server_id, "peerId": peer_id }),
     )
     .await
 }

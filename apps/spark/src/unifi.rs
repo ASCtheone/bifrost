@@ -396,6 +396,61 @@ impl UnifiClient {
         self.request(reqwest::Method::DELETE, &path, None).await?;
         Ok(())
     }
+
+    /// Create a client peer on a server. When `public_key` is None a keypair is generated
+    /// and the private key returned so the caller can hand the client its config; when
+    /// supplied, the client already holds its own key and no private key ever transits.
+    /// The IP is auto-picked from a free host in the server's subnet when `ip` is None.
+    /// Returns (assigned_ip, public_key, generated_private_key).
+    pub async fn create_client_peer(
+        &mut self,
+        server_id: &str,
+        name: &str,
+        public_key: Option<&str>,
+        ip: Option<&str>,
+        allowed_ips: Vec<String>,
+    ) -> Result<(String, String, Option<String>)> {
+        let (pub_key, priv_key) = match public_key.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(pk) => (pk.to_string(), None),
+            None => {
+                let kp = generate_keypair();
+                (kp.public_key, Some(kp.private_key))
+            }
+        };
+        let ip = match ip.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(x) => x.to_string(),
+            None => {
+                let servers = self.list_wg_servers().await?;
+                let subnet = servers
+                    .iter()
+                    .find(|s| s.id == server_id)
+                    .map(|s| s.server_address.clone())
+                    .context("create peer: server not found")?;
+                let existing = self.list_peers(server_id).await?;
+                pick_peer_ip(&subnet, &existing).context("create peer: no free address in the subnet")?
+            }
+        };
+        // On the server side a peer's allowed-ips is just its own tunnel address, so an
+        // unspecified list becomes the peer's /32 — never 0.0.0.0/0, which here would try
+        // to route every client's traffic to this one peer.
+        let allowed_ips = if allowed_ips.is_empty() {
+            vec![format!("{ip}/32")]
+        } else {
+            allowed_ips
+        };
+        self.create_peer(
+            server_id,
+            &NewPeer {
+                name: name.to_string(),
+                interface_ip: ip.clone(),
+                public_key: pub_key.clone(),
+                preshared_key: None,
+                allowed_ips,
+            },
+        )
+        .await?;
+        Ok((ip, pub_key, priv_key))
+    }
 }
 
 /// A generated WireGuard keypair, base64-encoded (standard WireGuard format).
@@ -428,6 +483,24 @@ fn pick_subnet(used: &[String]) -> Option<String> {
         })
         .collect();
     (0..=255).find(|n| !taken.contains(n)).map(|n| format!("{VPN_SUBNET_PREFIX}.{n}.1/24"))
+}
+
+/// The first free host address (`.2`–`.254`) in a server's /24, skipping the gateway and
+/// any address a peer already holds. `subnet` is a gateway CIDR like `10.13.0.1/24`.
+fn pick_peer_ip(subnet: &str, existing: &[WgPeer]) -> Option<String> {
+    let net = subnet.split('/').next().unwrap_or(subnet);
+    let octets: Vec<&str> = net.split('.').collect();
+    if octets.len() != 4 {
+        return None;
+    }
+    let base = format!("{}.{}.{}", octets[0], octets[1], octets[2]);
+    let taken: std::collections::HashSet<&str> = existing
+        .iter()
+        .map(|p| p.interface_ip.split('/').next().unwrap_or(&p.interface_ip))
+        .collect();
+    (2..=254)
+        .map(|h| format!("{base}.{h}"))
+        .find(|ip| !taken.contains(ip.as_str()))
 }
 
 /// The first free port at or above the WireGuard default that no network already uses.
@@ -540,6 +613,26 @@ mod tests {
         assert_eq!(pick_subnet(&used).as_deref(), Some("10.13.2.1/24"));
         // A non-VPN network on a different range doesn't consume a VPN block.
         assert_eq!(pick_subnet(&["192.168.8.1/24".into()]).as_deref(), Some("10.13.0.1/24"));
+    }
+
+    fn peer_at(ip: &str) -> WgPeer {
+        WgPeer {
+            id: "x".into(),
+            name: "p".into(),
+            public_key: "k".into(),
+            interface_ip: ip.into(),
+            preshared_key: None,
+            allowed_ips: vec![],
+        }
+    }
+
+    #[test]
+    fn pick_peer_ip_takes_the_first_free_host_skipping_gateway_and_used() {
+        assert_eq!(pick_peer_ip("10.13.0.1/24", &[]).as_deref(), Some("10.13.0.2"));
+        let used = [peer_at("10.13.0.2"), peer_at("10.13.0.3/32")];
+        assert_eq!(pick_peer_ip("10.13.0.1/24", &used).as_deref(), Some("10.13.0.4"));
+        // Malformed subnet yields nothing rather than a bad address.
+        assert_eq!(pick_peer_ip("not-a-subnet", &[]), None);
     }
 
     #[test]

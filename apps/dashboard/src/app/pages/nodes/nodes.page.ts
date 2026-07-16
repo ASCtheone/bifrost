@@ -54,7 +54,13 @@ interface NodeRow {
   readonly pendingVpnCreate: boolean;
   // Management-command queue + last results (create/update/delete server or peer).
   readonly pendingCommands?: readonly { id: string; kind: string }[];
-  readonly commandResults?: readonly { id: string; ok: boolean; error?: string }[];
+  readonly commandResults?: readonly {
+    id: string;
+    ok: boolean;
+    error?: string;
+    // Present on a peer.create result; privateKey only when the spark generated the key.
+    peer?: { serverId: string; ip: string; publicKey: string; privateKey?: string };
+  }[];
   readonly role: string;
   readonly priority: number;
   readonly status: string;
@@ -687,25 +693,51 @@ type PanelTab = 'status' | 'config' | 'unifi';
                                   <code class="mono-sm">{{ server.serverPort }}</code>
                                 </div>
                               </div>
-                              @if (server.peers?.length) {
-                                <div class="peer-list compact">
-                                  @for (peer of server.peers!; track peer.id) {
-                                    <div class="peer-row">
-                                      <div class="peer-info">
-                                        <span class="peer-name">{{ peer.name }}</span>
-                                        <code class="mono-sm">{{ peer.ip }}</code>
-                                      </div>
+                              <div class="peer-list compact">
+                                @for (peer of server.peers ?? []; track peer.id) {
+                                  <div class="peer-row">
+                                    <div class="peer-info">
+                                      <span class="peer-name">{{ peer.name }}</span>
+                                      <code class="mono-sm">{{ peer.ip }}</code>
                                     </div>
-                                  }
-                                </div>
-                              } @else {
-                                <div class="peer-empty">No clients</div>
-                              }
+                                    <div class="peer-actions">
+                                      <button class="icon-btn" (click)="renamePeer(node, server, peer)" [disabled]="busyNodeId() === node.id" title="Rename client">
+                                        <fa-icon [icon]="['fal', 'pen']" [fixedWidth]="true"></fa-icon>
+                                      </button>
+                                      <button class="icon-btn danger" (click)="deletePeer(node, server, peer)" [disabled]="busyNodeId() === node.id" title="Delete client">
+                                        <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
+                                      </button>
+                                    </div>
+                                  </div>
+                                }
+                                @if (!server.peers?.length) {
+                                  <div class="peer-empty">No clients</div>
+                                }
+                              </div>
+                              <button class="btn-sm secondary add-client" (click)="addPeer(node, server)" [disabled]="busyNodeId() === node.id || node.status !== 'online'" title="Add a WireGuard client to this server">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><path d="M12 5v14m-7-7h14"/></svg>
+                                Add client
+                              </button>
                             </div>
                           }
                         }
                       }
                     </div>
+                    @if (generatedConfig(node); as cfg) {
+                      <div class="config-panel">
+                        <div class="config-head">
+                          <span>Client config ready — {{ cfg.label }}</span>
+                          <button class="icon-btn" (click)="dismissConfig(cfg.id)" title="Dismiss">
+                            <fa-icon [icon]="['fal', 'xmark']" [fixedWidth]="true"></fa-icon>
+                          </button>
+                        </div>
+                        <pre class="config-body">{{ cfg.config }}</pre>
+                        <div class="config-actions">
+                          <button class="btn-sm secondary" (click)="copyConfig(cfg.config)">Copy</button>
+                          <button class="btn-sm secondary" (click)="downloadClientConfig(cfg)">Download .conf</button>
+                        </div>
+                      </div>
+                    }
                     @for (fail of failedCommands(node); track fail.id) {
                       <div class="cmd-error">
                         <fa-icon [icon]="['fal', 'triangle-exclamation']" [fixedWidth]="true"></fa-icon>
@@ -926,6 +958,11 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .cmd-pending { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.7rem; color: var(--accent); }
     .cmd-error { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.72rem; color: var(--danger, #ef4444); background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent); }
+    .add-client { margin-top: 0.5rem; gap: 0.3rem; }
+    .config-panel { margin-top: 0.6rem; border: 1px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface)); padding: 0.6rem 0.75rem; }
+    .config-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.75rem; font-weight: 600; color: var(--accent); margin-bottom: 0.4rem; }
+    .config-body { margin: 0; padding: 0.5rem 0.6rem; background: var(--bg-base, var(--bg-surface)); border-radius: 6px; font-size: 0.68rem; line-height: 1.5; overflow-x: auto; white-space: pre; color: var(--text-secondary); }
+    .config-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; }
     .vpn-card.spark-vpn { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface)); }
     .spark-vpn-badge { display: flex; align-items: center; gap: 0.4rem; color: var(--accent); }
     .spark-vpn-badge .vpn-name { color: var(--accent); font-weight: 600; }
@@ -1455,6 +1492,88 @@ export class NodesPage implements OnInit, OnDestroy {
   // Failed command results, newest surfaced so the user sees why an op didn't take.
   failedCommands(node: NodeRow): readonly { id: string; kind: string; error?: string }[] {
     return (node.commandResults ?? []).filter((r) => !r.ok).map((r) => ({ id: r.id, kind: '', error: r.error }));
+  }
+
+  // ── Client/peer CRUD (queued to the spark) ───────────────────────
+
+  async addPeer(node: NodeRow, server: VpnServer): Promise<void> {
+    const name = window.prompt('Client name:', 'client')?.trim();
+    if (!name) return;
+    await this.withBusy(node.id, async () => {
+      await this.api.post(`/nodes/${node.id}/servers/${server.id}/peers`, { name });
+    });
+  }
+
+  async renamePeer(node: NodeRow, server: VpnServer, peer: VpnPeer): Promise<void> {
+    const name = window.prompt('New client name:', peer.name)?.trim();
+    if (!name || name === peer.name) return;
+    // publicKey + ip preserve the client's keypair and address across the rename.
+    await this.withBusy(node.id, async () => {
+      await this.api.put(`/nodes/${node.id}/servers/${server.id}/peers/${peer.id}`, {
+        name,
+        publicKey: peer.publicKey,
+        ip: peer.ip,
+      });
+    });
+  }
+
+  async deletePeer(node: NodeRow, server: VpnServer, peer: VpnPeer): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Delete Client',
+      message: `Delete "${peer.name}" from "${server.name}"?`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.withBusy(node.id, async () => {
+      await this.api.delete(`/nodes/${node.id}/servers/${server.id}/peers/${peer.id}`);
+    });
+  }
+
+  // The dashboard builds the client .conf from a create result carrying a generated
+  // private key, plus the server's public key/port and the node's dial-in endpoint.
+  private dismissedConfigs = signal<Set<string>>(new Set());
+
+  generatedConfig(node: NodeRow): { id: string; label: string; config: string } | null {
+    const r = (node.commandResults ?? []).find(
+      (x) => x.ok && x.peer?.privateKey && !this.dismissedConfigs().has(x.id),
+    );
+    if (!r?.peer) return null;
+    const server = node.actualConfig?.servers?.find((s) => s.id === r.peer!.serverId);
+    if (!server || !node.endpoint) return null;
+    const p = r.peer;
+    const config = [
+      '[Interface]',
+      `PrivateKey = ${p.privateKey}`,
+      `Address = ${p.ip}/32`,
+      'DNS = 1.1.1.1',
+      '',
+      '[Peer]',
+      `PublicKey = ${server.publicKey}`,
+      `Endpoint = ${node.endpoint}:${server.serverPort}`,
+      'AllowedIPs = 0.0.0.0/0',
+      'PersistentKeepalive = 25',
+      '',
+    ].join('\n');
+    return { id: r.id, label: p.ip, config };
+  }
+
+  dismissConfig(id: string): void {
+    this.dismissedConfigs.update((s) => new Set(s).add(id));
+  }
+
+  async copyConfig(config: string): Promise<void> {
+    await navigator.clipboard.writeText(config);
+  }
+
+  downloadClientConfig(cfg: { label: string; config: string }): void {
+    const blob = new Blob([cfg.config], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bifrost-${cfg.label}.conf`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async pauseNode(nodeId: string): Promise<void> {
