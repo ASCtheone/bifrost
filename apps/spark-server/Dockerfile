@@ -86,7 +86,12 @@ ENV BIFROST_BIND_ADDR=0.0.0.0 \
 
 # The feed is baked into the image (rebuilt each `docker compose up --build`);
 # only the database is a persistent volume.
-RUN mkdir -p /app/data && chown -R bifrost:bifrost /app
+# Pre-create the self-update trigger dir owned by bifrost, so a FRESH named volume
+# mounted there inherits bifrost ownership (Docker seeds an empty volume from the
+# image dir) and the non-root server can write the trigger file. Existing volumes
+# are fixed at runtime by the updater sidecar (it chmods the shared dir on startup).
+RUN mkdir -p /app/data /run/bifrost-update \
+ && chown -R bifrost:bifrost /app /run/bifrost-update
 USER bifrost
 VOLUME ["/app/data"]
 EXPOSE 8443
