@@ -21,6 +21,12 @@ interface TSpark {
   readonly adoptionStatus: string;
   readonly shared: boolean;
   readonly ownerEmail: string | null;
+  readonly endpointOverride: string;
+  readonly priority: number;
+  readonly sparkVersion: string | null;
+  readonly latestVersion: string;
+  readonly updateAvailable: boolean;
+  readonly backupAvailable: boolean;
   readonly devices: readonly TDevice[];
 }
 interface TUser {
@@ -160,14 +166,70 @@ const X_GAP = 175;
               <!-- Editable fields (Save appears only when modified) + Delete, pinned bottom -->
               @if (sel.kind === 'spark' && asSpark(sel); as s) {
                 @if (canManageSpark(s)) {
+                  <!-- Software version: update to latest / revert to backup -->
+                  <div class="detail-section">
+                    <label class="edit-label">Version</label>
+                    <div class="ver-row">
+                      <span class="ver-chip">v{{ s.sparkVersion || '—' }}</span>
+                      @if (s.updateAvailable) {
+                        <fa-icon [icon]="['fal', 'chevron-right']" class="ver-arrow"></fa-icon>
+                        <span class="ver-chip new">v{{ s.latestVersion }}</span>
+                      }
+                    </div>
+                    <div class="btn-inline">
+                      @if (s.updateAvailable) {
+                        <button class="btn-sm accent" (click)="updateSpark(s)" [disabled]="busy()">Update</button>
+                      } @else {
+                        <span class="uptodate"><fa-icon [icon]="['fal', 'circle-check']"></fa-icon> Up to date</span>
+                      }
+                      @if (s.backupAvailable) {
+                        <button class="btn-sm" (click)="revertSpark(s)" [disabled]="busy()">Revert</button>
+                      }
+                    </div>
+                  </div>
+
                   <div class="detail-section">
                     <label class="edit-label">Name</label>
                     <input class="edit-input" [value]="s.name" #snm (input)="0" />
-                  </div>
-                  <div class="detail-footer">
                     @if (snm.value.trim() && snm.value.trim() !== s.name) {
-                      <button class="btn-sm accent" (click)="saveSparkName(s, snm.value)" [disabled]="busy()">Save</button>
+                      <button class="btn-sm accent inline-save" (click)="saveSparkName(s, snm.value)" [disabled]="busy()">Save name</button>
                     }
+                  </div>
+
+                  <!-- Endpoint override: the public host:port peers dial in on (blank = auto) -->
+                  <div class="detail-section">
+                    <label class="edit-label">Endpoint override</label>
+                    <input class="edit-input" [value]="s.endpointOverride" placeholder="auto-detected" #sep (input)="0" />
+                    @if (sep.value.trim() !== (s.endpointOverride || '').trim()) {
+                      <button class="btn-sm accent inline-save" (click)="saveEndpoint(s, sep.value)" [disabled]="busy()">Save endpoint</button>
+                    }
+                  </div>
+
+                  <!-- Priority: lower wins when a device can reach several sparks -->
+                  <div class="detail-section">
+                    <label class="edit-label">Priority</label>
+                    <input class="edit-input" type="number" [value]="s.priority" #spr (input)="0" />
+                    @if (spr.value !== '' && +spr.value !== s.priority) {
+                      <button class="btn-sm accent inline-save" (click)="savePriority(s, spr.value)" [disabled]="busy()">Save priority</button>
+                    }
+                  </div>
+
+                  @if (isSuperadmin()) {
+                    <div class="detail-section">
+                      <label class="edit-label">Owner</label>
+                      <input class="edit-input" [value]="s.ownerEmail || ''" placeholder="unassigned" #sow (input)="0" />
+                      <div class="btn-inline">
+                        @if (sow.value.trim() && sow.value.trim() !== (s.ownerEmail || '')) {
+                          <button class="btn-sm accent" (click)="reassignSpark(s, sow.value)" [disabled]="busy()">Assign</button>
+                        }
+                        @if (s.ownerEmail) {
+                          <button class="btn-sm" (click)="unassignSpark(s)" [disabled]="busy()">Unassign</button>
+                        }
+                      </div>
+                    </div>
+                  }
+
+                  <div class="detail-footer">
                     <button class="btn-sm danger" (click)="deleteSpark(s)" [disabled]="busy()">Delete</button>
                   </div>
                 } @else {
@@ -264,6 +326,17 @@ const X_GAP = 175;
     .btn-sm.accent:hover { filter: brightness(1.08); }
     .btn-sm.danger { background: var(--bg-input); color: var(--danger, #ef4444); border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, transparent); margin-left: auto; }
     .btn-sm.danger:hover { background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent); }
+    /* Neutral (unqualified) small button — used for Revert / Unassign. */
+    .btn-sm:not(.accent):not(.danger) { background: var(--bg-input, var(--bg-surface)); color: var(--text-secondary); border: 1px solid var(--border); }
+    .btn-sm:not(.accent):not(.danger):hover { background: var(--sidebar-hover); color: var(--text-primary); }
+    .inline-save { margin-top: 0.45rem; }
+    .btn-inline { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.5rem; }
+    .ver-row { display: flex; align-items: center; gap: 0.4rem; }
+    .ver-chip { padding: 0.15rem 0.5rem; border-radius: 5px; background: var(--bg-input, var(--bg-surface)); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+    .ver-chip.new { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: transparent; color: var(--accent); font-weight: 600; }
+    .ver-arrow { font-size: 0.6rem; color: var(--text-tertiary); }
+    .uptodate { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; color: var(--text-tertiary); }
+    .uptodate fa-icon { color: #22c55e; }
     .icon-btn { display: inline-flex; padding: 4px; background: transparent; border: none; border-radius: 5px; color: var(--text-tertiary); cursor: pointer; }
     .icon-btn:hover { background: color-mix(in srgb, var(--text-tertiary) 15%, transparent); }
   `],
@@ -485,6 +558,7 @@ export class TopologyPage implements OnInit {
   asUser(n: GraphNode): TUser { return n.data as TUser; }
 
   // ── Permissions (backend enforces too; this hides what you can't do) ──
+  isSuperadmin(): boolean { return this.auth.isSuperadmin(); }
   canManageSpark(s: TSpark): boolean {
     return this.auth.isSuperadmin() || (!!s.ownerEmail && s.ownerEmail === this.myEmail());
   }
@@ -541,6 +615,45 @@ export class TopologyPage implements OnInit {
   }
   async createVpn(s: TSpark): Promise<void> {
     await this.act(() => this.api.post(`/nodes/${s.nodeId}/create-vpn`), 's:' + s.nodeId);
+  }
+  async updateSpark(s: TSpark): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Update spark',
+      message: `Update "${s.name}" from v${s.sparkVersion} to v${s.latestVersion}? The spark downloads the verified binary and restarts; if the new version isn't healthy it rolls back automatically.`,
+      confirmLabel: 'Update',
+    });
+    if (ok) await this.act(() => this.api.post(`/nodes/${s.nodeId}/update`), 's:' + s.nodeId);
+  }
+  async revertSpark(s: TSpark): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Revert spark',
+      message: `Revert "${s.name}" to the previous version (its backup)? The spark restarts into it.`,
+      confirmLabel: 'Revert',
+      danger: true,
+    });
+    if (ok) await this.act(() => this.api.post(`/nodes/${s.nodeId}/revert`), 's:' + s.nodeId);
+  }
+  async saveEndpoint(s: TSpark, value: string): Promise<void> {
+    await this.act(() => this.api.put(`/nodes/${s.nodeId}`, { endpointOverride: value.trim() }), 's:' + s.nodeId);
+  }
+  async savePriority(s: TSpark, value: string): Promise<void> {
+    const p = Number(value);
+    if (!Number.isFinite(p) || p === s.priority) return;
+    await this.act(() => this.api.put(`/nodes/${s.nodeId}`, { priority: p }), 's:' + s.nodeId);
+  }
+  async reassignSpark(s: TSpark, email: string): Promise<void> {
+    const trimmed = email.trim();
+    if (!trimmed) return;
+    await this.act(() => this.api.put(`/nodes/${s.nodeId}`, { assignToEmail: trimmed }), 's:' + s.nodeId);
+  }
+  async unassignSpark(s: TSpark): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Unassign spark',
+      message: `Remove the owner from "${s.name}"? It becomes unassigned.`,
+      confirmLabel: 'Unassign',
+      danger: true,
+    });
+    if (ok) await this.act(() => this.api.put(`/nodes/${s.nodeId}`, { assignToEmail: null }), 's:' + s.nodeId);
   }
   async deleteSpark(s: TSpark): Promise<void> {
     const ok = await this.confirm.confirm({ title: 'Delete Spark', message: `Delete "${s.name}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true });

@@ -50,7 +50,7 @@ fn device_json(d: &Device) -> Value {
     })
 }
 
-fn spark_json(n: &Node, shared: bool, devices: &[&Device]) -> Value {
+fn spark_json(n: &Node, shared: bool, devices: &[&Device], latest: &str) -> Value {
     json!({
         "nodeId": n.node_id,
         "name": if n.node_name.is_empty() { n.node_id.clone() } else { n.node_name.clone() },
@@ -60,6 +60,13 @@ fn spark_json(n: &Node, shared: bool, devices: &[&Device]) -> Value {
         "adoptionStatus": n.adoption_status,
         "shared": shared,
         "ownerEmail": if n.owner_email.is_empty() { Value::Null } else { json!(n.owner_email) },
+        // The extras below back the topology panel's spark management options.
+        "endpointOverride": n.endpoint_override,
+        "priority": n.priority,
+        "sparkVersion": n.spark_version,
+        "latestVersion": latest,
+        "updateAvailable": n.spark_version.as_deref().map_or(false, |v| crate::release::version_lt(v, latest)),
+        "backupAvailable": n.spark_backup_available,
         "devices": devices.iter().map(|d| device_json(d)).collect::<Vec<_>>(),
     })
 }
@@ -79,6 +86,7 @@ fn role_label(groups: &[String]) -> &'static str {
 
 async fn superadmin_view(st: &AppState, nodes: &[Node], devices: &[Device]) -> AppResult<Json<Value>> {
     let users = user_repo::query_all_users(&st.pool).await?;
+    let latest = st.latest_version.read().map(|g| g.clone()).unwrap_or_default();
 
     // Roles by email, so a node owner who isn't a known user still gets a sensible label.
     let role_by_email: HashMap<&str, &str> =
@@ -104,7 +112,7 @@ async fn superadmin_view(st: &AppState, nodes: &[Node], devices: &[Device]) -> A
             let sparks: Vec<Value> = nodes
                 .iter()
                 .filter(|n| n.owner_email == owner_match)
-                .map(|n| spark_json(n, false, &devices_on(devices, &n.node_id, None)))
+                .map(|n| spark_json(n, false, &devices_on(devices, &n.node_id, None), &latest))
                 .collect();
             let u = user_by_email.get(email.as_str());
             json!({
@@ -129,6 +137,7 @@ async fn user_view(
     nodes: &[Node],
     devices: &[Device],
 ) -> AppResult<Json<Value>> {
+    let latest = st.latest_version.read().map(|g| g.clone()).unwrap_or_default();
     let shared_ids: std::collections::HashSet<String> = share_repo::shared_node_ids_for_email(&st.pool, me)
         .await?
         .into_iter()
@@ -138,7 +147,7 @@ async fn user_view(
     let my_sparks: Vec<Value> = nodes
         .iter()
         .filter(|n| n.owner_email == me)
-        .map(|n| spark_json(n, false, &devices_on(devices, &n.node_id, Some(me))))
+        .map(|n| spark_json(n, false, &devices_on(devices, &n.node_id, Some(me)), &latest))
         .collect();
 
     let mut users = vec![json!({ "email": me, "role": "you", "isSelf": true, "sparks": my_sparks })];
@@ -149,7 +158,7 @@ async fn user_view(
         by_owner
             .entry(n.owner_email.as_str())
             .or_default()
-            .push(spark_json(n, true, &devices_on(devices, &n.node_id, Some(me))));
+            .push(spark_json(n, true, &devices_on(devices, &n.node_id, Some(me)), &latest));
     }
     for (owner, sparks) in by_owner {
         users.push(json!({ "email": owner, "role": "shares with you", "isSelf": false, "sparks": sparks }));
