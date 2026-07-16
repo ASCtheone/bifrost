@@ -12,6 +12,21 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
   imports: [RouterOutlet, RouterLink, RouterLinkActive, FaIconComponent],
   template: `
     @if (loggedIn()) {
+      <!-- Full-screen, interaction-blocking update overlay -->
+      @if (update.updating()) {
+        <div class="update-overlay">
+          <div class="update-overlay-inner">
+            <img src="logo.png" class="update-overlay-logo" alt="Bifrost" />
+            <h2 class="update-overlay-title">Updating the dashboard…</h2>
+            <p class="update-overlay-msg">
+              The control plane is being updated@if (update.dashboard()?.latest) { to v{{ update.dashboard()!.latest }}}. This page will
+              reload automatically when it's back — please don't close this tab.
+            </p>
+            <div class="update-overlay-bar"><div class="update-overlay-fill" [style.width.%]="update.progress()"></div></div>
+            <div class="update-overlay-pct">{{ round(update.progress()) }}%</div>
+          </div>
+        </div>
+      }
       <div class="app-shell">
         <!-- Top bar (full width, above everything) -->
         <header class="top-bar">
@@ -21,6 +36,12 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
           </div>
           <div class="top-spacer"></div>
           <div class="top-right">
+            @if (update.dashboardUpdate(); as d) {
+              <button class="top-update-btn" (click)="update.updateDashboard()" [title]="'Update the dashboard to v' + d.latest">
+                <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
+                Update to v{{ d.latest }}
+              </button>
+            }
             <div class="notif-menu">
               <button class="top-btn" (click)="notifOpen.set(!notifOpen())" title="Updates">
                 <fa-icon [icon]="['fal', 'bell']" [fixedWidth]="true"></fa-icon>
@@ -40,13 +61,8 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
                         <div class="notif-title">Dashboard update available</div>
                         <div class="notif-sub">v{{ d.current }} → v{{ d.latest }}</div>
                       </div>
-                      @if (!update.updating()) {
-                        <button class="notif-update-btn" (click)="update.updateDashboard()">Update</button>
-                      }
+                      <button class="notif-update-btn" (click)="update.updateDashboard(); notifOpen.set(false)">Update</button>
                     </div>
-                    @if (update.updating()) {
-                      <div class="notif-progress"><div class="notif-progress-fill" [style.width.%]="update.progress()"></div></div>
-                    }
                     @if (update.error()) { <div class="notif-err">{{ update.error() }}</div> }
                   }
                   @if (update.sparkUpdates().length) {
@@ -87,14 +103,8 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
           </div>
         </header>
 
-        <!-- Update notification bar -->
-        @if (update.updating()) {
-          <div class="update-bar">
-            <fa-icon [icon]="['fal', 'arrow-rotate-right']" class="spin" [fixedWidth]="true"></fa-icon>
-            <span class="update-bar-text">Updating the dashboard… the page will reload when it's back.</span>
-            <div class="bar-progress"><div class="bar-progress-fill" [style.width.%]="update.progress()"></div></div>
-          </div>
-        } @else if (update.count() > 0 && !barDismissed()) {
+        <!-- Update notification bar (the full-screen overlay handles the updating state) -->
+        @if (update.count() > 0 && !barDismissed() && !update.updating()) {
           <div class="update-bar">
             <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
             <span class="update-bar-text">
@@ -193,6 +203,17 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
       transition: all 0.15s ease;
     }
     .top-btn:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+    .top-update-btn { display: flex; align-items: center; gap: 0.35rem; height: 26px; padding: 0 0.7rem; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 600; cursor: pointer; transition: filter 0.15s ease; }
+    .top-update-btn:hover { filter: brightness(1.1); }
+    .update-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg-base, #14161a) 92%, transparent); backdrop-filter: blur(4px); }
+    .update-overlay-inner { width: 100%; max-width: 380px; text-align: center; padding: 2rem; }
+    .update-overlay-logo { width: 52px; height: 52px; margin-bottom: 1rem; animation: overlaypulse 1.8s ease-in-out infinite; }
+    @keyframes overlaypulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+    .update-overlay-title { margin: 0 0 0.5rem; font-size: 1.15rem; color: var(--text-primary); }
+    .update-overlay-msg { margin: 0 0 1.4rem; font-size: 0.82rem; line-height: 1.5; color: var(--text-secondary); }
+    .update-overlay-bar { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 20%, transparent); overflow: hidden; }
+    .update-overlay-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+    .update-overlay-pct { margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
     .notif-menu { position: relative; }
     .notif-badge { position: absolute; top: -2px; right: -2px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
     .notif-center { right: 0; left: auto; min-width: 260px; }
@@ -371,6 +392,10 @@ export class App implements OnInit, OnDestroy {
   goToSparks(): void {
     this.notifOpen.set(false);
     this.router.navigate(['/sparks']);
+  }
+
+  round(n: number): number {
+    return Math.round(n);
   }
 
   private setUserInfo(email: string): void {
