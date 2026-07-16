@@ -32,6 +32,11 @@ services:
       BIFROST_COMPOSE_DIR: /compose
       BIFROST_SERVICE: server
       BIFROST_UPDATE_TRIGGER: /run/bifrost-update/request
+      # CRITICAL: must equal your live stack's Compose project name, or the recreate will
+      # spin up a DUPLICATE server instead of updating the running one. Find it with
+      # `docker compose ls` (the NAME column) and set it here. It defaults to the compose
+      # file's directory name, so if you deploy from /opt/bifrost this is usually "bifrost".
+      COMPOSE_PROJECT_NAME: bifrost
 
 volumes:
   update-trigger:

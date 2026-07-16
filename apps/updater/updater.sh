@@ -12,7 +12,7 @@ PROJECT_DIR="${BIFROST_COMPOSE_DIR:-/compose}"
 SERVICE="${BIFROST_SERVICE:-server}"
 
 mkdir -p "$(dirname "$TRIGGER")"
-echo "bifrost-updater: watching $TRIGGER (service=$SERVICE, dir=$PROJECT_DIR)"
+echo "bifrost-updater: watching $TRIGGER (service=$SERVICE, dir=$PROJECT_DIR, project=${COMPOSE_PROJECT_NAME:-<compose-dir default>})"
 
 while :; do
 	if [ -f "$TRIGGER" ]; then
