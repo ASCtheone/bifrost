@@ -15,6 +15,7 @@ pub mod pairing; // device-code pairing
 pub mod peers;
 pub mod provision;
 pub mod shared;
+pub mod topology;
 pub mod users;
 
 /// The REST API surface — everything except the package feed and the dashboard
@@ -33,6 +34,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(pairing::routes())
         .merge(config::routes())
         .merge(users::routes())
+        .merge(topology::routes())
         .merge(admin::routes())
 }
 

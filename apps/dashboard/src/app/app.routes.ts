@@ -49,6 +49,11 @@ export const routes: Routes = [
           import('./pages/devices/devices.page').then((m) => m.DevicesPage),
       },
       {
+        path: 'topology',
+        loadComponent: () =>
+          import('./pages/topology/topology.page').then((m) => m.TopologyPage),
+      },
+      {
         path: 'users',
         canActivate: [adminGuard],
         loadComponent: () =>

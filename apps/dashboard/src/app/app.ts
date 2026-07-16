@@ -62,6 +62,9 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
               <a routerLink="/devices" routerLinkActive="active" class="rail-item" title="Devices">
                 <fa-icon [icon]="['fal', 'laptop-mobile']" [fixedWidth]="true"></fa-icon>
               </a>
+              <a routerLink="/topology" routerLinkActive="active" class="rail-item" title="Topology">
+                <fa-icon [icon]="['fal', 'sitemap']" [fixedWidth]="true"></fa-icon>
+              </a>
               @if (authService.isAdmin()) {
                 <div class="rail-divider"></div>
                 <a routerLink="/users" routerLinkActive="active" class="rail-item admin-item" title="Users">
