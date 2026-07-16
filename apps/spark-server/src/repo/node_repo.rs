@@ -384,6 +384,61 @@ pub async fn append_pending_peer_deletions(
     Ok(())
 }
 
+/// Append a management command to the node's queue (read-modify-write on the JSON
+/// `pending_commands` column). The command is an opaque object the spark interprets;
+/// it must carry a unique `id` so the heartbeat can acknowledge and remove it.
+pub async fn append_command(pool: &SqlitePool, node_id: &str, command: serde_json::Value) -> AppResult<()> {
+    let existing: Option<(String,)> = sqlx::query_as("SELECT pending_commands FROM nodes WHERE node_id = ?")
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?;
+    let mut list: Vec<serde_json::Value> = existing
+        .and_then(|(s,)| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    list.push(command);
+    let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+    sqlx::query("UPDATE nodes SET pending_commands = ?, updated_at = ? WHERE node_id = ?")
+        .bind(json)
+        .bind(now_iso())
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Acknowledge executed commands: drop the given ids from `pending_commands` and record
+/// their results in `command_results` (for the dashboard). Ids the spark reports that were
+/// already gone are simply not found — harmless.
+pub async fn ack_commands(
+    pool: &SqlitePool,
+    node_id: &str,
+    executed_ids: &[String],
+    results: &serde_json::Value,
+) -> AppResult<()> {
+    if executed_ids.is_empty() {
+        return Ok(());
+    }
+    let existing: Option<(String,)> = sqlx::query_as("SELECT pending_commands FROM nodes WHERE node_id = ?")
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?;
+    let done: std::collections::HashSet<&str> = executed_ids.iter().map(String::as_str).collect();
+    let remaining: Vec<serde_json::Value> = existing
+        .and_then(|(s,)| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.get("id").and_then(|v| v.as_str()).map(|id| !done.contains(id)).unwrap_or(true))
+        .collect();
+    sqlx::query("UPDATE nodes SET pending_commands = ?, command_results = ?, updated_at = ? WHERE node_id = ?")
+        .bind(serde_json::to_string(&remaining).unwrap_or_else(|_| "[]".into()))
+        .bind(results.to_string())
+        .bind(now_iso())
+        .bind(node_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ── Heartbeat ───────────────────────────────────────────────────
 
 #[derive(Debug, Default)]

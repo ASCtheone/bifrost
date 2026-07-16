@@ -270,21 +270,36 @@ impl UnifiClient {
     /// `firewall_zone_id` itself. We deliberately do NOT clone an existing server: that
     /// copies per-object identifiers (`external_id`, `wireguard_id`) and causes conflicts.
     /// The full payload (private key redacted) and any error body are logged.
-    pub async fn create_wg_server(&mut self, name: &str) -> Result<WgServer> {
+    pub async fn create_wg_server(
+        &mut self,
+        name: &str,
+        subnet: Option<&str>,
+        port: Option<i64>,
+    ) -> Result<WgServer> {
         let networks = self.get_rest("/rest/networkconf").await?;
 
-        let used_subnets: Vec<String> = networks
-            .iter()
-            .filter_map(|n| n.get("ip_subnet").and_then(Value::as_str).map(String::from))
-            .collect();
-        let subnet = pick_subnet(&used_subnets)
-            .context("no free 10.13.N.0/24 subnet available for a new VPN server")?;
-
-        let used_ports: Vec<i64> = networks
-            .iter()
-            .filter_map(|n| n.get("local_port").and_then(Value::as_i64))
-            .collect();
-        let port = pick_port(&used_ports);
+        // Operator-specified subnet/port win; otherwise auto-pick a free one.
+        let subnet = match subnet.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => s.to_string(),
+            None => {
+                let used_subnets: Vec<String> = networks
+                    .iter()
+                    .filter_map(|n| n.get("ip_subnet").and_then(Value::as_str).map(String::from))
+                    .collect();
+                pick_subnet(&used_subnets)
+                    .context("no free 10.13.N.0/24 subnet available for a new VPN server")?
+            }
+        };
+        let port = match port.filter(|p| *p > 0) {
+            Some(p) => p,
+            None => {
+                let used_ports: Vec<i64> = networks
+                    .iter()
+                    .filter_map(|n| n.get("local_port").and_then(Value::as_i64))
+                    .collect();
+                pick_port(&used_ports)
+            }
+        };
 
         let kp = generate_keypair();
 
@@ -340,6 +355,46 @@ impl UnifiClient {
             public_key: kp.public_key,
             raw: String::new(),
         })
+    }
+
+    /// Update a WireGuard server's mutable fields. UniFi's REST update is a full-object
+    /// PUT (verified live), so we GET the current object, apply the changes, and PUT it
+    /// back — leaving every field we don't touch exactly as the controller had it.
+    pub async fn update_wg_server(
+        &mut self,
+        server_id: &str,
+        name: Option<&str>,
+        port: Option<i64>,
+        enabled: Option<bool>,
+    ) -> Result<()> {
+        let path = format!("{}/rest/networkconf/{}", self.api_path(), server_id);
+        let cur = self.request(reqwest::Method::GET, &path, None).await?;
+        let mut obj = cur
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .cloned()
+            .context("update WireGuard server: server not found")?;
+        if let Some(o) = obj.as_object_mut() {
+            if let Some(n) = name.map(str::trim).filter(|s| !s.is_empty()) {
+                o.insert("name".into(), json!(n));
+            }
+            if let Some(p) = port.filter(|p| *p > 0) {
+                o.insert("local_port".into(), json!(p));
+            }
+            if let Some(e) = enabled {
+                o.insert("enabled".into(), json!(e));
+            }
+        }
+        self.request(reqwest::Method::PUT, &path, Some(&obj)).await?;
+        Ok(())
+    }
+
+    /// Delete a WireGuard server from the controller.
+    pub async fn delete_wg_server(&mut self, server_id: &str) -> Result<()> {
+        let path = format!("{}/rest/networkconf/{}", self.api_path(), server_id);
+        self.request(reqwest::Method::DELETE, &path, None).await?;
+        Ok(())
     }
 }
 

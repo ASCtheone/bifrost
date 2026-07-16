@@ -114,7 +114,7 @@ async fn tick(
         }
         *unifi = None;
         *applied = None;
-        heartbeat(control, node_id, node_key, None, &[], &[], false, None).await?;
+        heartbeat(control, node_id, node_key, None, &[], &[], &[], false, None).await?;
         return Ok(());
     };
     *idle_logged = false;
@@ -171,18 +171,68 @@ async fn sync_once(
     node_key: &str,
     desired: &DesiredConfig,
 ) -> Result<()> {
+    // Drain the management-command queue first, so the inventory we then report reflects
+    // any server just created/updated/deleted this cycle.
+    let command_results = execute_commands(unifi, &desired.commands).await;
     match reconcile(unifi, desired).await {
         Ok(o) => {
-            heartbeat(control, node_id, node_key, o.server.as_ref(), &o.peers, &o.inventory, o.clear_deletions, None).await
+            heartbeat(control, node_id, node_key, o.server.as_ref(), &o.peers, &o.inventory, &command_results, o.clear_deletions, None).await
         }
         Err(e) => {
             let msg = format!("{e:#}");
             tracing::warn!("unifi reconcile failed: {msg}");
             // Still report in: online, with the reason, so the dashboard can show it.
-            heartbeat(control, node_id, node_key, None, &[], &[], false, Some(&msg)).await?;
+            heartbeat(control, node_id, node_key, None, &[], &[], &command_results, false, Some(&msg)).await?;
             Err(e)
         }
     }
+}
+
+/// Execute the queued management commands against the controller and return a result per
+/// command (`{ id, ok, error? }`) for the control plane to acknowledge. Commands are
+/// independent: one failing doesn't stop the rest, and its error is reported, not
+/// swallowed. An unrecognised kind reports an error rather than being silently dropped.
+async fn execute_commands(unifi: &mut UnifiClient, commands: &[Value]) -> Vec<Value> {
+    let mut results = Vec::with_capacity(commands.len());
+    for cmd in commands {
+        let id = cmd.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let kind = cmd.get("kind").and_then(Value::as_str).unwrap_or("");
+        let outcome: Result<()> = match kind {
+            "server.create" => {
+                let name = cmd.get("name").and_then(Value::as_str).unwrap_or("New VPN");
+                let subnet = cmd.get("subnet").and_then(Value::as_str);
+                let port = cmd.get("port").and_then(Value::as_i64);
+                unifi.create_wg_server(name, subnet, port).await.map(|_| ())
+            }
+            "server.update" => {
+                let sid = cmd.get("serverId").and_then(Value::as_str).unwrap_or_default();
+                unifi
+                    .update_wg_server(
+                        sid,
+                        cmd.get("name").and_then(Value::as_str),
+                        cmd.get("port").and_then(Value::as_i64),
+                        cmd.get("enabled").and_then(Value::as_bool),
+                    )
+                    .await
+            }
+            "server.delete" => {
+                let sid = cmd.get("serverId").and_then(Value::as_str).unwrap_or_default();
+                unifi.delete_wg_server(sid).await
+            }
+            other => Err(anyhow::anyhow!("unknown command kind: {other}")),
+        };
+        match outcome {
+            Ok(()) => {
+                tracing::info!(%id, %kind, "executed management command");
+                results.push(json!({ "id": id, "ok": true }));
+            }
+            Err(e) => {
+                tracing::warn!(%id, %kind, "management command failed: {e:#}");
+                results.push(json!({ "id": id, "ok": false, "error": format!("{e:#}") }));
+            }
+        }
+    }
+    results
 }
 
 /// The name a peer gets on the controller.
@@ -277,7 +327,7 @@ async fn reconcile(
                 // server we already created with this name rather than duplicating it.
                 match servers.into_iter().find(|s| s.name == name) {
                     Some(existing) => existing,
-                    None => unifi.create_wg_server(name).await?,
+                    None => unifi.create_wg_server(name, None, None).await?,
                 }
             } else {
                 tracing::info!(
@@ -413,6 +463,7 @@ async fn heartbeat(
     server: Option<&unifi::WgServer>,
     peers: &[unifi::WgPeer],
     inventory: &[ServerPeers],
+    command_results: &[Value],
     clear_peer_deletions: bool,
     error: Option<&str>,
 ) -> Result<()> {
@@ -456,6 +507,11 @@ async fn heartbeat(
     // queue to [] on this flag). Without it the same peer ids are re-sent every cycle.
     if clear_peer_deletions {
         body["clearPeerDeletions"] = json!(true);
+    }
+    // Report the outcome of any management commands executed this cycle; the control plane
+    // removes those ids from the queue and records the results for the dashboard.
+    if !command_results.is_empty() {
+        body["commandResults"] = json!(command_results);
     }
     // Always present: `null` clears a previous error once the controller recovers.
     body["error"] = match error {

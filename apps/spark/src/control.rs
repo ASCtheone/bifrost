@@ -43,6 +43,11 @@ pub struct DesiredConfig {
     /// UniFi peer ids the control plane has queued for deletion.
     #[serde(default)]
     pub pending_peer_deletions: Vec<String>,
+    /// Management commands (create/update/delete server or peer) to execute this cycle.
+    /// Kept as raw JSON so an unknown/new command kind doesn't fail the whole batch — each
+    /// is interpreted individually by the spark, and an unrecognised one reports an error.
+    #[serde(default)]
+    pub commands: Vec<serde_json::Value>,
     /// The UniFi controller to drive, as configured in the dashboard. `None` until an
     /// operator fills it in — the spark then idles instead of failing.
     #[serde(default)]

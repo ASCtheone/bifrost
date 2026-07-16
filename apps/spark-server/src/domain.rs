@@ -89,6 +89,11 @@ pub struct Node {
     pub speed_up: Option<f64>,
     pub speed_ping: Option<f64>,
     pub pending_peer_deletions: Option<Json<serde_json::Value>>,
+    /// Queued management commands for the spark (create/update/delete server or peer),
+    /// a JSON array drained on the spark's next cycle. See migration 0008.
+    pub pending_commands: Option<Json<serde_json::Value>>,
+    /// Outcome of the most recently executed commands (id, ok, error) — for the dashboard.
+    pub command_results: Option<Json<serde_json::Value>>,
     pub created_at: String,
     pub updated_at: String,
 }

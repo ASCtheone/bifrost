@@ -52,6 +52,9 @@ interface NodeRow {
   readonly sparkVpnName: string | null;
   readonly sparkVpnId: string | null;
   readonly pendingVpnCreate: boolean;
+  // Management-command queue + last results (create/update/delete server or peer).
+  readonly pendingCommands?: readonly { id: string; kind: string }[];
+  readonly commandResults?: readonly { id: string; ok: boolean; error?: string }[];
   readonly role: string;
   readonly priority: number;
   readonly status: string;
@@ -578,10 +581,17 @@ type PanelTab = 'status' | 'config' | 'unifi';
                   <div class="unifi-section">
                     <div class="section-header">
                       <h4>VPN Servers</h4>
+                      <button class="btn-sm secondary" (click)="addServer(node)" [disabled]="busyNodeId() === node.id || node.status !== 'online'" title="Create a new WireGuard server (auto 10.13.x subnet)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 5v14m-7-7h14"/></svg>
+                        Add VPN
+                      </button>
                       <button class="btn-sm secondary" (click)="refreshNode(node.id)" [disabled]="busyNodeId() === node.id" title="Refresh from controller">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12" [class.spinning]="busyNodeId() === node.id"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                         {{ busyNodeId() === node.id ? 'Refreshing...' : 'Refresh' }}
                       </button>
+                      @if (hasPendingCommands(node)) {
+                        <span class="cmd-pending"><span class="spinner-sm"></span> applying…</span>
+                      }
                       @if (node.actualConfig?.servers?.length) {
                         <span class="count-badge">{{ node.actualConfig!.servers.length }}</span>
                       }
@@ -655,9 +665,17 @@ type PanelTab = 'status' | 'config' | 'unifi';
                             <div class="vpn-card dimmed">
                               <div class="vpn-card-header">
                                 <span class="vpn-name">{{ server.name }}</span>
-                                @if (server.peers?.length) {
-                                  <span class="count-badge">{{ server.peers!.length }}</span>
-                                }
+                                <div class="vpn-card-actions">
+                                  @if (server.peers?.length) {
+                                    <span class="count-badge">{{ server.peers!.length }}</span>
+                                  }
+                                  <button class="icon-btn" (click)="renameServer(node, server)" [disabled]="busyNodeId() === node.id" title="Rename server">
+                                    <fa-icon [icon]="['fal', 'pen']" [fixedWidth]="true"></fa-icon>
+                                  </button>
+                                  <button class="icon-btn danger" (click)="deleteServer(node, server)" [disabled]="busyNodeId() === node.id" title="Delete server">
+                                    <fa-icon [icon]="['fal', 'trash-can']" [fixedWidth]="true"></fa-icon>
+                                  </button>
+                                </div>
                               </div>
                               <div class="vpn-details">
                                 <div class="vpn-detail">
@@ -688,6 +706,12 @@ type PanelTab = 'status' | 'config' | 'unifi';
                         }
                       }
                     </div>
+                    @for (fail of failedCommands(node); track fail.id) {
+                      <div class="cmd-error">
+                        <fa-icon [icon]="['fal', 'triangle-exclamation']" [fixedWidth]="true"></fa-icon>
+                        Last operation failed: {{ fail.error || 'unknown error' }}
+                      </div>
+                    }
                   </div>
 
                   <!-- Bifrost Peers -->
@@ -896,6 +920,12 @@ type PanelTab = 'status' | 'config' | 'unifi';
     .peer-list.compact { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--border); gap: 0.15rem; }
     .peer-list.compact .peer-row { padding: 0.15rem 0; }
     .peer-empty { margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-tertiary); font-style: italic; }
+    .icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 3px; background: transparent; border: none; border-radius: 5px; color: var(--text-tertiary); cursor: pointer; font-size: 0.7rem; transition: all 0.15s ease; }
+    .icon-btn:hover { background: color-mix(in srgb, var(--text-tertiary) 15%, transparent); color: var(--text-secondary); }
+    .icon-btn.danger:hover { background: color-mix(in srgb, var(--danger, #ef4444) 15%, transparent); color: var(--danger, #ef4444); }
+    .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .cmd-pending { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.7rem; color: var(--accent); }
+    .cmd-error { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; padding: 0.4rem 0.6rem; border-radius: 6px; font-size: 0.72rem; color: var(--danger, #ef4444); background: color-mix(in srgb, var(--danger, #ef4444) 10%, transparent); }
     .vpn-card.spark-vpn { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface)); }
     .spark-vpn-badge { display: flex; align-items: center; gap: 0.4rem; color: var(--accent); }
     .spark-vpn-badge .vpn-name { color: var(--accent); font-weight: 600; }
@@ -1385,6 +1415,46 @@ export class NodesPage implements OnInit, OnDestroy {
     });
     if (!ok) return;
     await this.createVpn(node.id);
+  }
+
+  // ── WireGuard server CRUD (queued to the spark) ──────────────────
+
+  // Create a new server with an auto-picked 10.13.x subnet + port. Rename afterward.
+  async addServer(node: NodeRow): Promise<void> {
+    await this.withBusy(node.id, async () => {
+      await this.api.post(`/nodes/${node.id}/servers`, {});
+    });
+  }
+
+  async renameServer(node: NodeRow, server: VpnServer): Promise<void> {
+    const name = window.prompt('New name for this VPN server:', server.name)?.trim();
+    if (!name || name === server.name) return;
+    await this.withBusy(node.id, async () => {
+      await this.api.put(`/nodes/${node.id}/servers/${server.id}`, { name });
+    });
+  }
+
+  async deleteServer(node: NodeRow, server: VpnServer): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Delete VPN Server',
+      message: `Delete "${server.name}" and all its clients from the controller? This can't be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    await this.withBusy(node.id, async () => {
+      await this.api.delete(`/nodes/${node.id}/servers/${server.id}`);
+    });
+  }
+
+  // Whether a management command is queued/in-flight for this node.
+  hasPendingCommands(node: NodeRow): boolean {
+    return !!node.pendingCommands?.length;
+  }
+
+  // Failed command results, newest surfaced so the user sees why an op didn't take.
+  failedCommands(node: NodeRow): readonly { id: string; kind: string; error?: string }[] {
+    return (node.commandResults ?? []).filter((r) => !r.ok).map((r) => ({ id: r.id, kind: '', error: r.error }));
   }
 
   async pauseNode(nodeId: string): Promise<void> {

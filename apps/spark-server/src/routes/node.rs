@@ -94,6 +94,14 @@ async fn desired_config(
         Value::Null
     };
 
+    // Queued management commands (create/update/delete server or peer) for the spark to
+    // execute against the controller this cycle.
+    let commands = node
+        .pending_commands
+        .as_ref()
+        .map(|j| j.0.clone())
+        .unwrap_or_else(|| json!([]));
+
     Ok(Json(json!({
         "vpnName": node.spark_vpn_name,
         // The id of the spark-owned server, once created — the spark selects by this.
@@ -102,6 +110,7 @@ async fn desired_config(
         "pendingVpnCreate": node.pending_vpn_create,
         "peers": peers,
         "pendingPeerDeletions": pending,
+        "commands": commands,
         "unifi": unifi,
     })))
 }
@@ -165,6 +174,20 @@ async fn heartbeat(
     };
 
     node_repo::update_heartbeat(&st.pool, &node_id, update).await?;
+
+    // Acknowledge executed management commands: drop them from the queue and record their
+    // results (id, ok, error) for the dashboard. The spark reports `commandResults` as an
+    // array of { id, ok, error? }.
+    if let Some(results) = b.get("commandResults").and_then(Value::as_array) {
+        let executed_ids: Vec<String> = results
+            .iter()
+            .filter_map(|r| r.get("id").and_then(Value::as_str).map(String::from))
+            .collect();
+        if !executed_ids.is_empty() {
+            node_repo::ack_commands(&st.pool, &node_id, &executed_ids, b.get("commandResults").unwrap())
+                .await?;
+        }
+    }
 
     // Re-address any device whose IP predates our knowing this spark's subnet.
     //

@@ -24,6 +24,9 @@ pub fn routes() -> Router<AppState> {
         .route("/nodes/:nodeId/adopt", post(adopt_node))
         .route("/nodes/:nodeId/reissue-code", post(reissue_code))
         .route("/nodes/:nodeId/create-vpn", post(create_vpn))
+        // WireGuard server CRUD — enqueued as commands the spark executes on the controller.
+        .route("/nodes/:nodeId/servers", post(create_server))
+        .route("/nodes/:nodeId/servers/:serverId", put(update_server).delete(delete_server))
         .route("/nodes/:nodeId/revoke", post(revoke_node))
         .route("/nodes/:nodeId/delete-peer", post(delete_node_peer))
         .route("/nodes/:nodeId/role", put(set_node_role))
@@ -112,6 +115,10 @@ fn node_to_list_json(n: &Node, shared: bool) -> Value {
         "speedUp": n.speed_up,
         "error": n.error,
         "actualConfig": n.actual_config.as_ref().map(|c| c.0.clone()),
+        // Management-command queue + last results, so the dashboard can show pending ops
+        // and surface failures.
+        "pendingCommands": n.pending_commands.as_ref().map(|c| c.0.clone()),
+        "commandResults": n.command_results.as_ref().map(|c| c.0.clone()),
         "lastSeen": n.last_seen,
         "createdAt": n.created_at,
         "ownerId": if n.owner_id.is_empty() { Value::Null } else { json!(n.owner_id) },
@@ -379,6 +386,84 @@ async fn create_vpn(
     const VPN_NAME: &str = "SPARK VPN";
     node_repo::mark_vpn_create(&st.pool, &node_id, VPN_NAME).await?;
     Ok(Json(json!({ "success": true, "vpnName": VPN_NAME })))
+}
+
+// ── WireGuard server CRUD (enqueued commands) ───────────────────
+
+/// Enqueue a command for the spark and return its id. The spark drains the queue each
+/// cycle, executes against the controller, and acknowledges on heartbeat.
+async fn enqueue(st: &AppState, node_id: &str, command: Value) -> AppResult<Json<Value>> {
+    node_repo::get_node(&st.pool, node_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Node not found".into()))?;
+    let id = command.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+    node_repo::append_command(&st.pool, node_id, command).await?;
+    Ok(Json(json!({ "commandId": id })))
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CreateServerReq {
+    name: Option<String>,
+    /// Optional CIDR (e.g. "10.13.7.1/24"); the spark auto-picks a free one when absent.
+    subnet: Option<String>,
+    /// Optional listen port; the spark auto-picks a free one when absent.
+    port: Option<i64>,
+}
+
+async fn create_server(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(node_id): Path<String>,
+    body: Option<Json<CreateServerReq>>,
+) -> AppResult<Json<Value>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let name = req.name.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "New VPN".into());
+    enqueue(
+        &st,
+        &node_id,
+        json!({ "id": util::ulid(), "kind": "server.create", "name": name, "subnet": req.subnet, "port": req.port }),
+    )
+    .await
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpdateServerReq {
+    name: Option<String>,
+    port: Option<i64>,
+    enabled: Option<bool>,
+}
+
+async fn update_server(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path((node_id, server_id)): Path<(String, String)>,
+    body: Option<Json<UpdateServerReq>>,
+) -> AppResult<Json<Value>> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    enqueue(
+        &st,
+        &node_id,
+        json!({
+            "id": util::ulid(), "kind": "server.update", "serverId": server_id,
+            "name": req.name, "port": req.port, "enabled": req.enabled,
+        }),
+    )
+    .await
+}
+
+async fn delete_server(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path((node_id, server_id)): Path<(String, String)>,
+) -> AppResult<Json<Value>> {
+    enqueue(
+        &st,
+        &node_id,
+        json!({ "id": util::ulid(), "kind": "server.delete", "serverId": server_id }),
+    )
+    .await
 }
 
 // ── POST /nodes/{nodeId}/revoke ─────────────────────────────────
