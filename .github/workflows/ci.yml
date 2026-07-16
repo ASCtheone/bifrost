@@ -92,6 +92,17 @@ jobs:
             ghcr.io/asctheone/bifrost-spark:${{ steps.ver.outputs.v }}
             ghcr.io/asctheone/bifrost-spark:${{ github.sha }}
 
+      - name: Updater image (control-plane self-update sidecar)
+        if: ${{ env.FA_TOKEN != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/updater
+          push: ${{ env.PUSH == 'true' }}
+          tags: |
+            ghcr.io/asctheone/bifrost-updater:latest
+            ghcr.io/asctheone/bifrost-updater:${{ steps.ver.outputs.v }}
+            ghcr.io/asctheone/bifrost-updater:${{ github.sha }}
+
   # Build the GL.iNet/OpenWrt package as an opkg feed (ipk + Packages index). The
   # `release` job below publishes it; this one only builds, so PRs still catch a
   # broken ipk without publishing anything.

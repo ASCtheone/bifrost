@@ -15,6 +15,7 @@ pub mod pairing; // device-code pairing
 pub mod peers;
 pub mod provision;
 pub mod shared;
+pub mod selfupdate;
 pub mod topology;
 pub mod users;
 
@@ -35,6 +36,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(config::routes())
         .merge(users::routes())
         .merge(topology::routes())
+        .merge(selfupdate::routes())
         .merge(admin::routes())
 }
 

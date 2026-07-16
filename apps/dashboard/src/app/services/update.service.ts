@@ -29,6 +29,45 @@ export class UpdateService {
   readonly dashboardUpdate = computed(() => (this.dashboard()?.updateAvailable ? this.dashboard() : null));
   readonly count = computed(() => (this.dashboardUpdate() ? 1 : 0) + this.sparkUpdates().length);
 
+  // Dashboard/control-plane self-update state (the updater sidecar pulls + recreates it).
+  readonly updating = signal(false);
+  readonly progress = signal(0);
+  readonly error = signal<string | null>(null);
+
+  // Ask the updater to pull the latest server image and recreate the control plane. The
+  // API goes down during the recreate, so we show a timed bar and poll /version until the
+  // new version answers, then reload the page onto it.
+  async updateDashboard(): Promise<void> {
+    if (this.updating()) return;
+    const target = this.dashboard()?.latest;
+    this.error.set(null);
+    this.updating.set(true);
+    this.progress.set(5);
+    try {
+      await this.api.post('/update-self');
+    } catch {
+      this.updating.set(false);
+      this.progress.set(0);
+      this.error.set('Self-update isn\'t configured on this deployment (updater sidecar missing).');
+      return;
+    }
+    const started = Date.now();
+    const est = 90_000; // rough recreate time — the poll below is what actually finishes it
+    const poll = setInterval(async () => {
+      this.progress.set(Math.min(95, 5 + ((Date.now() - started) / est) * 90));
+      try {
+        const v = await this.api.get<VersionInfo>('/version');
+        if (!v.updateAvailable && (!target || v.current === target)) {
+          clearInterval(poll);
+          this.progress.set(100);
+          setTimeout(() => window.location.reload(), 900);
+        }
+      } catch {
+        /* control plane is restarting — keep polling */
+      }
+    }, 3000);
+  }
+
   start(): void {
     if (this.timer) return;
     void this.refresh();

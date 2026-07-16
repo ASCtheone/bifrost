@@ -36,11 +36,18 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
                   @if (update.dashboardUpdate(); as d) {
                     <div class="notif-item">
                       <fa-icon [icon]="['fal', 'grid-2']" [fixedWidth]="true"></fa-icon>
-                      <div>
+                      <div style="flex:1">
                         <div class="notif-title">Dashboard update available</div>
                         <div class="notif-sub">v{{ d.current }} → v{{ d.latest }}</div>
                       </div>
+                      @if (!update.updating()) {
+                        <button class="notif-update-btn" (click)="update.updateDashboard()">Update</button>
+                      }
                     </div>
+                    @if (update.updating()) {
+                      <div class="notif-progress"><div class="notif-progress-fill" [style.width.%]="update.progress()"></div></div>
+                    }
+                    @if (update.error()) { <div class="notif-err">{{ update.error() }}</div> }
                   }
                   @if (update.sparkUpdates().length) {
                     <button class="dropdown-item" (click)="goToSparks()">
@@ -81,15 +88,24 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
         </header>
 
         <!-- Update notification bar -->
-        @if (update.count() > 0 && !barDismissed()) {
+        @if (update.updating()) {
+          <div class="update-bar">
+            <fa-icon [icon]="['fal', 'arrow-rotate-right']" class="spin" [fixedWidth]="true"></fa-icon>
+            <span class="update-bar-text">Updating the dashboard… the page will reload when it's back.</span>
+            <div class="bar-progress"><div class="bar-progress-fill" [style.width.%]="update.progress()"></div></div>
+          </div>
+        } @else if (update.count() > 0 && !barDismissed()) {
           <div class="update-bar">
             <fa-icon [icon]="['fal', 'arrow-rotate-right']" [fixedWidth]="true"></fa-icon>
             <span class="update-bar-text">
               @if (update.dashboardUpdate(); as d) { Dashboard update available (v{{ d.latest }}).&nbsp; }
               @if (update.sparkUpdates().length) { {{ update.sparkUpdates().length }} spark{{ update.sparkUpdates().length > 1 ? 's' : '' }} can be updated. }
             </span>
+            @if (update.dashboardUpdate()) {
+              <button class="update-bar-btn" (click)="update.updateDashboard()">Update dashboard</button>
+            }
             @if (update.sparkUpdates().length) {
-              <button class="update-bar-btn" (click)="goToSparks()">Update sparks →</button>
+              <button class="update-bar-btn ghost" (click)="goToSparks()">Update sparks →</button>
             }
             <button class="update-bar-close" (click)="barDismissed.set(true)" title="Dismiss">✕</button>
           </div>
@@ -190,8 +206,18 @@ import { gravatarUrl as getGravatarUrl } from './utils/md5';
     .update-bar-text { flex: 1; }
     .update-bar-btn { padding: 3px 12px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 600; cursor: pointer; }
     .update-bar-btn:hover { filter: brightness(1.08); }
+    .update-bar-btn.ghost { background: transparent; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); }
     .update-bar-close { background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 0.85rem; padding: 2px 6px; }
     .update-bar-close:hover { color: var(--text-primary); }
+    .bar-progress { flex: 0 0 160px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 20%, transparent); overflow: hidden; }
+    .bar-progress-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+    .notif-update-btn { padding: 3px 10px; border-radius: 6px; border: none; background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 600; cursor: pointer; }
+    .notif-update-btn:hover { filter: brightness(1.08); }
+    .notif-progress { height: 5px; margin: 0 0.9rem 0.6rem; border-radius: 3px; background: color-mix(in srgb, var(--accent) 20%, transparent); overflow: hidden; }
+    .notif-progress-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+    .notif-err { padding: 0 0.9rem 0.7rem; font-size: 0.7rem; color: var(--danger, #ef4444); }
+    .spin { animation: topspin 1s linear infinite; }
+    @keyframes topspin { to { transform: rotate(360deg); } }
     .avatar-menu { position: relative; }
     .avatar-btn {
       display: flex; align-items: center; justify-content: center;

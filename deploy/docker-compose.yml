@@ -1,0 +1,37 @@
+# Reference deployment for the Bifrost control plane + self-update sidecar.
+#
+# The `server` container runs the Rust control plane and serves the dashboard. The
+# `updater` container is the only one with Docker-socket access: when an admin clicks
+# "Update dashboard", the server drops a trigger file on the shared `update-trigger`
+# volume, and the updater pulls the latest server image and recreates it here.
+#
+# Adjust ports, the data volume, and the server's own env to your setup — only the
+# self-update wiring (the trigger volume + the updater service) is prescribed here.
+
+services:
+  server:
+    image: ghcr.io/asctheone/bifrost-server:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080" # put your reverse proxy (Caddy/Traefik) in front
+    volumes:
+      - ./data:/data # SQLite DB + config — adjust to your layout
+      - update-trigger:/run/bifrost-update
+    environment:
+      BIFROST_UPDATE_TRIGGER: /run/bifrost-update/request
+      # ... your existing control-plane configuration goes here ...
+
+  updater:
+    image: ghcr.io/asctheone/bifrost-updater:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/compose/docker-compose.yml:ro
+      - update-trigger:/run/bifrost-update
+    environment:
+      BIFROST_COMPOSE_DIR: /compose
+      BIFROST_SERVICE: server
+      BIFROST_UPDATE_TRIGGER: /run/bifrost-update/request
+
+volumes:
+  update-trigger:
