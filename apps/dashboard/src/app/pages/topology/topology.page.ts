@@ -617,12 +617,8 @@ export class TopologyPage implements OnInit {
     await this.act(() => this.api.post(`/nodes/${s.nodeId}/create-vpn`), 's:' + s.nodeId);
   }
   async updateSpark(s: TSpark): Promise<void> {
-    const ok = await this.confirm.confirm({
-      title: 'Update spark',
-      message: `Update "${s.name}" from v${s.sparkVersion} to v${s.latestVersion}? The spark downloads the verified binary and restarts; if the new version isn't healthy it rolls back automatically.`,
-      confirmLabel: 'Update',
-    });
-    if (ok) await this.act(() => this.api.post(`/nodes/${s.nodeId}/update`), 's:' + s.nodeId);
+    // No confirmation — the update is health-gated and auto-rolls-back if unhealthy.
+    await this.act(() => this.api.post(`/nodes/${s.nodeId}/update`), 's:' + s.nodeId);
   }
   async revertSpark(s: TSpark): Promise<void> {
     const ok = await this.confirm.confirm({

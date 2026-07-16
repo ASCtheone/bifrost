@@ -161,24 +161,12 @@ export class UpdatesPage implements OnInit {
     return this.update.sparks().filter((s) => s.updateAvailable).length;
   }
 
+  // Updates apply immediately (no confirmation) — both are health-gated with auto-rollback.
   async doDashboard(): Promise<void> {
-    const d = this.update.dashboard();
-    const ok = await this.confirm.confirm({
-      title: 'Update dashboard',
-      message: `Update the control plane from v${d?.current} to v${d?.latest}? The dashboard restarts and the page reloads onto the new version.`,
-      confirmLabel: 'Update',
-    });
-    if (!ok) return;
     await this.update.updateDashboard();
   }
 
   async doSpark(s: SparkVersion): Promise<void> {
-    const ok = await this.confirm.confirm({
-      title: 'Update spark',
-      message: `Update "${s.name}" from v${s.sparkVersion} to v${s.latestVersion}? The spark downloads the verified binary and restarts; if the new version isn't healthy it rolls back automatically.`,
-      confirmLabel: 'Update',
-    });
-    if (!ok) return;
     await this.update.updateSpark(s);
   }
 

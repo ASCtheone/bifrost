@@ -1815,12 +1815,7 @@ export class NodesPage implements OnInit, OnDestroy {
   // spark picks the command up on its next cycle, downloads, restarts and health-gates —
   // so we poll and surface the stage until its reported version catches up.
   async updateSpark(node: NodeRow): Promise<void> {
-    const ok = await this.confirm.confirm({
-      title: 'Update spark',
-      message: `Update "${node.name}" from v${node.sparkVersion} to v${node.latestVersion}? The spark downloads the verified binary and restarts; if the new version isn't healthy it rolls back automatically.`,
-      confirmLabel: 'Update',
-    });
-    if (!ok) return;
+    // No confirmation — the update is health-gated and auto-rolls-back if unhealthy.
     const target = node.latestVersion ?? '';
     this.setUpdating(node.id, 'Queued on the spark…');
     try {
