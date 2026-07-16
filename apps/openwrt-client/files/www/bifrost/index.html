@@ -49,8 +49,7 @@
   .primary { background: var(--accent); color: #05242e; }
   .ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
   .danger { background: transparent; color: var(--error); border: 1px solid var(--border); }
-  .msg { margin-top: 14px; font-size: 13px; min-height: 18px; }
-  .msg.err { color: var(--error); } .msg.ok { color: var(--success); }
+  .icon-btn { flex: 0 0 auto; width: 46px; font-size: 18px; line-height: 1; padding: 12px 0; }
   .hidden { display: none; }
   /* Footer — separated from the configuration panel by a rule + generous space,
      so the address of this page doesn't read as one more setting. */
@@ -113,16 +112,10 @@
       </div>
 
       <div class="btns">
-        <button class="primary" id="connect">Connect</button>
-        <button class="danger" id="disconnect">Disconnect</button>
-      </div>
-      <div class="btns">
-        <button class="ghost" id="save">Save settings</button>
-        <button class="ghost" id="refresh">Refresh</button>
+        <button class="primary" id="actionBtn">Connect</button>
+        <button class="ghost icon-btn" id="refresh" title="Refresh from master" aria-label="Refresh">↻</button>
       </div>
     </div>
-
-    <div class="msg" id="msg"></div>
 
     <!-- Footer: where this page lives, and what build it is. Set off from the
          config panel above so it reads as chrome, not another setting. -->
@@ -137,9 +130,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var pollTimer = null;
 
-  function setMsg(text, ok) { var m = $('msg'); m.textContent = text || ''; m.className = 'msg ' + (ok ? 'ok' : 'err'); }
   function show(id, on) { $(id).classList[on ? 'remove' : 'add']('hidden'); }
-
   function callbackUrl() { return window.location.origin + '/cgi-bin/bifrost'; }
 
   function paint(data) {
@@ -155,6 +146,8 @@
     } else {
       show('uiLink', false);
     }
+
+    // The top window is the single source of status — no separate message line.
     if (data.state === 'up') {
       dot.style.background = 'var(--success)';
       t.textContent = 'Connected — last handshake ' + (data.handshakeAge || '?') + 's ago';
@@ -189,8 +182,23 @@
       var nodes = data.nodes || [];
       show('noSpark', nodes.length === 0);
       buildLocations(data);
-      $('killswitch').checked = !!data.killswitch;
-      $('routeLan').checked = !!data.routeLan;
+      // Don't stomp a toggle the user is actively flipping.
+      if (document.activeElement !== $('killswitch')) $('killswitch').checked = !!data.killswitch;
+      if (document.activeElement !== $('routeLan')) $('routeLan').checked = !!data.routeLan;
+      paintButton(data);
+    }
+  }
+
+  // One button whose label + action follow the current state: Connect when off,
+  // Cancel while connecting (stops the attempt), Disconnect when up.
+  function paintButton(data) {
+    var b = $('actionBtn');
+    if (data.state === 'up') {
+      b.textContent = 'Disconnect'; b.className = 'danger'; b.dataset.act = 'disconnect';
+    } else if (data.enabled) {
+      b.textContent = 'Cancel'; b.className = 'ghost'; b.dataset.act = 'disconnect';
+    } else {
+      b.textContent = 'Connect'; b.className = 'primary'; b.dataset.act = 'connect';
     }
   }
 
@@ -212,13 +220,20 @@
     fetch(API + '?action=status').then(function (r) { return r.json(); }).then(paint).catch(function () {});
   }
 
+  // Pull the latest config from the master — picks up dashboard changes (a newly
+  // adopted spark, renamed nodes) without a page reload and WITHOUT reconnecting, so it's
+  // safe to run on a timer even while disconnected. Runs on open and on a timer.
+  function backgroundRefresh() {
+    fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'fetch' }) })
+      .then(function (r) { return r.json(); }).then(paint).catch(function () {});
+  }
+
   function post(body, btn) {
     if (btn) btn.disabled = true;
-    setMsg('');
     return fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
       .then(function (d) { paint(d); return d; })
-      .catch(function () { setMsg('Request failed — is the router reachable?', false); })
+      .catch(function () {})
       .finally(function () { if (btn) btn.disabled = false; });
   }
 
@@ -230,18 +245,24 @@
   }
   function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
-  $('getCode').onclick = function () { post({ action: 'bootstrap' }, this).then(function () { setMsg('Code generated.', true); }); };
-  $('newCode').onclick = $('getCode').onclick;
-  $('save').onclick = function () {
-    post({ action: 'save', location: $('location').value, killswitch: $('killswitch').checked, routeLan: $('routeLan').checked }, this)
-      .then(function () { setMsg('Settings saved.', true); });
-  };
-  $('connect').onclick = function () { post({ action: 'connect' }, this).then(function () { setMsg('Connecting…', true); }); };
-  $('disconnect').onclick = function () { post({ action: 'disconnect' }, this).then(function () { setMsg('Disconnected.', true); }); };
-  $('refresh').onclick = function () { post({ action: 'refresh' }, this).then(function () { setMsg('Refreshed from master.', true); }); };
+  // Settings apply live — no Save button.
+  function saveSettings() {
+    post({ action: 'save', location: $('location').value, killswitch: $('killswitch').checked, routeLan: $('routeLan').checked });
+  }
 
+  $('getCode').onclick = function () { post({ action: 'bootstrap' }, this); };
+  $('newCode').onclick = $('getCode').onclick;
+  $('location').onchange = saveSettings;
+  $('killswitch').onchange = saveSettings;
+  $('routeLan').onchange = saveSettings;
+  $('actionBtn').onclick = function () { post({ action: this.dataset.act }, this); };
+  $('refresh').onclick = function () { backgroundRefresh(); };
+
+  // Live on open: immediate status, a background config pull, then keep both fresh.
   refreshStatus();
-  setInterval(refreshStatus, 5000);
+  backgroundRefresh();
+  setInterval(refreshStatus, 4000);
+  setInterval(backgroundRefresh, 30000);
 </script>
 </body>
 </html>

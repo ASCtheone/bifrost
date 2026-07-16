@@ -59,6 +59,9 @@ case "$action" in
 	connect)    "$BIN" up >/dev/null 2>&1; emit "$(status_json)" ;;
 	disconnect) "$BIN" down >/dev/null 2>&1; emit "$(status_json)" ;;
 	refresh)    "$BIN" refresh >/dev/null 2>&1; emit "$(status_json)" ;;
+	# Config-only pull (no reconnect) — the UI's background refresh, safe to run while
+	# the router is disconnected.
+	fetch)      "$BIN" fetch >/dev/null 2>&1; emit "$(status_json)" ;;
 	status)     emit "$(status_json)" ;;
 	*)          emit '{"error":"unknown action"}' ;;
 esac
