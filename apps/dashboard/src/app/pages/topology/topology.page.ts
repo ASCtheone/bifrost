@@ -1,4 +1,4 @@
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, HostListener } from '@angular/core';
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
 import { ApiService } from '../../services/api.service';
 
@@ -30,6 +30,28 @@ interface Topology {
   readonly users: readonly TUser[];
 }
 
+type NodeKind = 'root' | 'user' | 'spark' | 'device';
+
+interface GraphNode {
+  id: string;
+  kind: NodeKind;
+  label: string;
+  sub: string;
+  status?: string;
+  shared?: boolean;
+  x: number;
+  y: number;
+  // The source object (TUser/TSpark/TDevice) for the detail panel.
+  data: unknown;
+}
+interface GraphEdge {
+  from: string;
+  to: string;
+}
+
+const TIER_Y: Record<NodeKind, number> = { root: 60, user: 190, spark: 330, device: 470 };
+const X_GAP = 175;
+
 @Component({
   selector: 'app-topology',
   standalone: true,
@@ -41,128 +63,120 @@ interface Topology {
         @if (topology(); as t) {
           <span class="view-pill">{{ t.view === 'superadmin' ? 'All users' : 'Your access' }}</span>
         }
+        <div class="head-actions">
+          <button class="btn-sm secondary" (click)="resetView()" title="Reset pan/zoom">Reset view</button>
+        </div>
       </div>
 
       @if (loading()) {
         <div class="state"><fa-icon [icon]="['fal', 'circle-notch']" class="spin"></fa-icon> Loading topology…</div>
       } @else if (error()) {
         <div class="state error">{{ error() }}</div>
-      } @else if (topology(); as t) {
-        @if (!t.users.length) {
-          <div class="state">Nothing to show yet.</div>
-        } @else {
-          <div class="tree-scroll">
-            <div class="tree">
-              <ul>
-                <li>
-                  <div class="node root-node">
-                    <fa-icon [icon]="['fal', 'sitemap']" [fixedWidth]="true"></fa-icon>
-                    <span>{{ t.view === 'superadmin' ? 'All Users' : 'My Network' }}</span>
-                  </div>
-                  <ul>
-                    @for (user of t.users; track user.email) {
-                      <li>
-                        <div class="node user-node" [class.self]="user.isSelf">
-                          <fa-icon [icon]="['fal', 'users']" [fixedWidth]="true"></fa-icon>
-                          <div class="node-body">
-                            <span class="node-title">{{ user.email }}</span>
-                            <span class="node-sub">{{ user.role }}</span>
-                          </div>
-                        </div>
-                        @if (user.sparks.length) {
-                          <ul>
-                            @for (spark of user.sparks; track spark.nodeId) {
-                              <li>
-                                <div class="node spark-node">
-                                  <span class="dot" [class]="statusClass(spark.status)"></span>
-                                  <fa-icon [icon]="['fal', 'server']" [fixedWidth]="true"></fa-icon>
-                                  <div class="node-body">
-                                    <span class="node-title">{{ spark.name }}</span>
-                                    <span class="node-sub">
-                                      {{ spark.status }}
-                                      @if (spark.shared) { · <span class="shared-tag">shared</span> }
-                                    </span>
-                                  </div>
-                                </div>
-                                @if (spark.devices.length) {
-                                  <ul>
-                                    @for (dev of spark.devices; track dev.deviceId) {
-                                      <li>
-                                        <div class="node device-node">
-                                          <span class="dot" [class]="statusClass(dev.status)"></span>
-                                          <fa-icon [icon]="['fal', 'laptop-mobile']" [fixedWidth]="true"></fa-icon>
-                                          <div class="node-body">
-                                            <span class="node-title">{{ dev.name }}</span>
-                                            <span class="node-sub mono">{{ dev.assignedIp }}</span>
-                                          </div>
-                                        </div>
-                                      </li>
-                                    }
-                                  </ul>
-                                }
-                              </li>
-                            }
-                          </ul>
-                        }
-                      </li>
+      } @else if (!nodes().length) {
+        <div class="state">Nothing to show yet.</div>
+      } @else {
+        <div class="graph-layout" [class.panel-open]="selected()">
+          <div class="graph-wrap" (mousedown)="onBgDown($event)" (wheel)="onWheel($event)">
+            <svg class="graph" width="100%" height="100%">
+              <g [attr.transform]="'translate(' + t().x + ',' + t().y + ') scale(' + t().k + ')'">
+                @for (e of edges(); track e.from + e.to) {
+                  @if (pos(e.from); as a) {
+                    @if (pos(e.to); as b) {
+                      <line [attr.x1]="a.x" [attr.y1]="a.y" [attr.x2]="b.x" [attr.y2]="b.y" class="edge" />
                     }
-                  </ul>
-                </li>
-              </ul>
-            </div>
+                  }
+                }
+                @for (n of nodes(); track n.id) {
+                  <g [attr.transform]="'translate(' + n.x + ',' + n.y + ')'"
+                     class="gnode" [class]="n.kind"
+                     [class.selected]="selected()?.id === n.id"
+                     (mousedown)="onNodeDown($event, n)">
+                    <rect [attr.x]="-nodeW(n)/2" [attr.y]="-22" [attr.width]="nodeW(n)" height="44" rx="10" class="nbox" />
+                    @if (n.status) {
+                      <circle [attr.cx]="-nodeW(n)/2 + 14" cy="0" r="5" [attr.class]="'sdot ' + statusClass(n.status)" />
+                    }
+                    <text [attr.x]="n.status ? -nodeW(n)/2 + 26 : -nodeW(n)/2 + 14" y="-2" class="ntitle">{{ n.label }}</text>
+                    <text [attr.x]="n.status ? -nodeW(n)/2 + 26 : -nodeW(n)/2 + 14" y="12" class="nsub">{{ n.sub }}</text>
+                    @if (n.shared) {
+                      <text [attr.x]="nodeW(n)/2 - 10" y="-8" class="ntag" text-anchor="end">shared</text>
+                    }
+                  </g>
+                }
+              </g>
+            </svg>
+            <div class="graph-hint">drag to pan · scroll to zoom · drag a node to move it · click to inspect</div>
           </div>
-        }
+
+          @if (selected(); as sel) {
+            <aside class="detail-panel">
+              <div class="detail-head">
+                <div class="detail-title">
+                  <fa-icon [icon]="['fal', iconFor(sel.kind)]" [fixedWidth]="true"></fa-icon>
+                  <span>{{ sel.label }}</span>
+                </div>
+                <button class="icon-btn" (click)="clearSelection()" title="Close"><fa-icon [icon]="['fal', 'xmark']" [fixedWidth]="true"></fa-icon></button>
+              </div>
+              <div class="detail-kind">{{ kindLabel(sel.kind) }}</div>
+              <div class="detail-body">
+                @for (row of detailRows(sel); track row.label) {
+                  <div class="drow">
+                    <span class="dlabel">{{ row.label }}</span>
+                    <span class="dvalue" [class.mono]="row.mono">{{ row.value }}</span>
+                  </div>
+                }
+              </div>
+              <div class="detail-note">Editing &amp; actions arrive in the next update.</div>
+            </aside>
+          }
+        </div>
       }
     </div>
   `,
   styles: [`
-    .page { padding: 1.5rem; }
-    .page-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem; }
+    .page { padding: 1.5rem; height: calc(100vh - 3rem); display: flex; flex-direction: column; }
+    .page-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
     .page-head h2 { margin: 0; }
+    .head-actions { margin-left: auto; }
     .view-pill { padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
     .state { padding: 2rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem; }
     .state.error { color: var(--danger, #ef4444); }
     .spin { animation: tspin 1s linear infinite; }
     @keyframes tspin { to { transform: rotate(360deg); } }
 
-    .tree-scroll { overflow-x: auto; padding-bottom: 1rem; }
-    .tree { display: inline-block; min-width: 100%; }
-    .tree ul { position: relative; padding-top: 22px; display: flex; justify-content: center; }
-    .tree li { list-style: none; position: relative; padding: 22px 10px 0; display: flex; flex-direction: column; align-items: center; }
-    /* Connector lines (classic CSS org-chart technique). */
-    .tree li::before, .tree li::after {
-      content: ''; position: absolute; top: 0; right: 50%;
-      border-top: 1px solid var(--border); width: 50%; height: 22px;
-    }
-    .tree li::after { right: auto; left: 50%; border-left: 1px solid var(--border); }
-    .tree li:only-child::before, .tree li:only-child::after { display: none; }
-    .tree li:only-child { padding-top: 0; }
-    .tree li:first-child::before, .tree li:last-child::after { border: 0 none; }
-    .tree li:last-child::before { border-right: 1px solid var(--border); border-radius: 0 6px 0 0; }
-    .tree li:first-child::after { border-radius: 6px 0 0 0; }
-    .tree ul ul::before {
-      content: ''; position: absolute; top: 0; left: 50%;
-      border-left: 1px solid var(--border); width: 0; height: 22px;
-    }
-    .tree > ul { padding-top: 0; }
+    .graph-layout { flex: 1; display: flex; gap: 1rem; min-height: 0; }
+    .graph-wrap { flex: 1; position: relative; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background:
+      radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 12%, transparent) 1px, transparent 1px);
+      background-size: 22px 22px; cursor: grab; user-select: none; }
+    .graph-wrap:active { cursor: grabbing; }
+    .graph { display: block; }
+    .graph-hint { position: absolute; bottom: 8px; left: 12px; font-size: 0.66rem; color: var(--text-tertiary); pointer-events: none; }
 
-    .node { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; white-space: nowrap; }
-    .node fa-icon { color: var(--text-tertiary); }
-    .node-body { display: flex; flex-direction: column; text-align: left; line-height: 1.25; }
-    .node-title { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); }
-    .node-sub { font-size: 0.66rem; color: var(--text-tertiary); }
-    .node-sub.mono { font-family: ui-monospace, monospace; }
-    .mono { font-family: ui-monospace, monospace; }
+    .edge { stroke: var(--border); stroke-width: 1.5; }
+    .gnode { cursor: pointer; }
+    .nbox { fill: var(--bg-surface); stroke: var(--border); stroke-width: 1; }
+    .gnode.root .nbox { fill: color-mix(in srgb, var(--accent) 14%, var(--bg-surface)); stroke: var(--accent); }
+    .gnode.user .nbox { stroke: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+    .gnode.selected .nbox { stroke: var(--accent); stroke-width: 2; }
+    .ntitle { font-size: 11px; font-weight: 600; fill: var(--text-primary); }
+    .nsub { font-size: 9px; fill: var(--text-tertiary); }
+    .ntag { font-size: 8px; font-weight: 700; fill: var(--warning, #f59e0b); text-transform: uppercase; }
+    .sdot { stroke: none; }
+    .sdot.online { fill: var(--success, #22c55e); }
+    .sdot.warn { fill: var(--warning, #f59e0b); }
+    .sdot.offline { fill: var(--text-disabled, #9ca3af); }
 
-    .root-node { background: color-mix(in srgb, var(--accent) 12%, var(--bg-surface)); border-color: var(--accent); font-weight: 700; font-size: 0.85rem; color: var(--accent); }
-    .root-node fa-icon { color: var(--accent); }
-    .user-node.self { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface)); }
-    .shared-tag { color: var(--warning, #f59e0b); font-weight: 600; }
-
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); flex-shrink: 0; }
-    .dot.online { background: var(--success, #22c55e); }
-    .dot.offline { background: var(--text-disabled, #9ca3af); }
-    .dot.warn { background: var(--warning, #f59e0b); }
+    .detail-panel { width: 320px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); padding: 1rem; overflow-y: auto; }
+    .detail-head { display: flex; align-items: center; justify-content: space-between; }
+    .detail-title { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; overflow: hidden; }
+    .detail-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-kind { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); margin: 0.15rem 0 0.9rem; }
+    .drow { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+    .dlabel { font-size: 0.72rem; color: var(--text-tertiary); }
+    .dvalue { font-size: 0.75rem; color: var(--text-primary); text-align: right; word-break: break-word; }
+    .dvalue.mono { font-family: ui-monospace, monospace; }
+    .detail-note { margin-top: 1rem; font-size: 0.68rem; color: var(--text-tertiary); font-style: italic; }
+    .icon-btn { display: inline-flex; padding: 4px; background: transparent; border: none; border-radius: 5px; color: var(--text-tertiary); cursor: pointer; }
+    .icon-btn:hover { background: color-mix(in srgb, var(--text-tertiary) 15%, transparent); }
   `],
 })
 export class TopologyPage implements OnInit {
@@ -172,14 +186,195 @@ export class TopologyPage implements OnInit {
   loading = signal(true);
   error = signal<string | null>(null);
 
+  nodes = signal<GraphNode[]>([]);
+  edges = signal<GraphEdge[]>([]);
+  selected = signal<GraphNode | null>(null);
+  t = signal<{ x: number; y: number; k: number }>({ x: 0, y: 0, k: 1 });
+
+  private posById = computed(() => {
+    const m = new Map<string, GraphNode>();
+    for (const n of this.nodes()) m.set(n.id, n);
+    return m;
+  });
+
+  // Pan/drag state.
+  private panning = false;
+  private dragNode: GraphNode | null = null;
+  private last = { x: 0, y: 0 };
+  private moved = false;
+
   async ngOnInit(): Promise<void> {
     try {
-      this.topology.set(await this.api.get<Topology>('/topology'));
+      const t = await this.api.get<Topology>('/topology');
+      this.topology.set(t);
+      this.buildGraph(t);
     } catch {
       this.error.set('Failed to load topology.');
     } finally {
       this.loading.set(false);
     }
+  }
+
+  pos(id: string): GraphNode | undefined {
+    return this.posById().get(id);
+  }
+
+  private buildGraph(t: Topology): void {
+    const nodes: GraphNode[] = [];
+    const edges: GraphEdge[] = [];
+    const viewLabel = t.view === 'superadmin' ? 'All Users' : 'My Network';
+    const root: GraphNode = { id: 'root', kind: 'root', label: viewLabel, sub: '', x: 0, y: TIER_Y.root, data: null };
+    nodes.push(root);
+
+    let slot = 0; // leaf column counter, drives x layout bottom-up
+    const centerOf = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : slot++ * X_GAP);
+
+    const userXs: number[] = [];
+    for (const u of t.users) {
+      const uid = 'u:' + u.email;
+      const sparkXs: number[] = [];
+      for (const s of u.sparks) {
+        const sid = 's:' + s.nodeId;
+        const devXs: number[] = [];
+        for (const d of s.devices) {
+          const did = 'd:' + d.deviceId;
+          const x = slot++ * X_GAP;
+          devXs.push(x);
+          nodes.push({ id: did, kind: 'device', label: d.name, sub: d.assignedIp || d.type, status: d.status, x, y: TIER_Y.device, data: d });
+          edges.push({ from: sid, to: did });
+        }
+        const sx = centerOf(devXs);
+        sparkXs.push(sx);
+        nodes.push({ id: sid, kind: 'spark', label: s.name, sub: s.status, status: s.status, shared: s.shared, x: sx, y: TIER_Y.spark, data: s });
+        edges.push({ from: uid, to: sid });
+      }
+      const ux = centerOf(sparkXs);
+      userXs.push(ux);
+      nodes.push({ id: uid, kind: 'user', label: u.email, sub: u.role, x: ux, y: TIER_Y.user, data: u });
+      edges.push({ from: 'root', to: uid });
+    }
+    root.x = centerOf(userXs);
+
+    // Center the whole graph in the viewport initially.
+    const xs = nodes.map((n) => n.x);
+    const mid = (Math.min(...xs) + Math.max(...xs)) / 2;
+    this.nodes.set(nodes);
+    this.edges.set(edges);
+    this.t.set({ x: 400 - mid, y: 20, k: 1 });
+  }
+
+  nodeW(n: GraphNode): number {
+    const len = Math.max(n.label.length, n.sub.length);
+    return Math.min(220, Math.max(120, len * 7 + (n.status ? 30 : 20)));
+  }
+
+  // ── Interaction ─────────────────────────────────────────────────
+
+  onBgDown(ev: MouseEvent): void {
+    this.panning = true;
+    this.moved = false;
+    this.last = { x: ev.clientX, y: ev.clientY };
+  }
+
+  onNodeDown(ev: MouseEvent, n: GraphNode): void {
+    ev.stopPropagation();
+    this.dragNode = n;
+    this.moved = false;
+    this.last = { x: ev.clientX, y: ev.clientY };
+  }
+
+  @HostListener('document:mousemove', ['$event'])
+  onMove(ev: MouseEvent): void {
+    if (!this.panning && !this.dragNode) return;
+    const dx = ev.clientX - this.last.x;
+    const dy = ev.clientY - this.last.y;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) this.moved = true;
+    this.last = { x: ev.clientX, y: ev.clientY };
+    if (this.dragNode) {
+      const k = this.t().k;
+      const node = this.dragNode;
+      this.nodes.update((list) => list.map((x) => (x.id === node.id ? { ...x, x: x.x + dx / k, y: x.y + dy / k } : x)));
+      this.dragNode = this.posById().get(node.id) ?? this.dragNode;
+    } else if (this.panning) {
+      this.t.update((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+    }
+  }
+
+  @HostListener('document:mouseup')
+  onUp(): void {
+    if (this.dragNode && !this.moved) {
+      const n = this.dragNode;
+      this.selected.set(n.kind === 'root' ? null : n);
+    }
+    this.panning = false;
+    this.dragNode = null;
+  }
+
+  onWheel(ev: WheelEvent): void {
+    ev.preventDefault();
+    const factor = ev.deltaY < 0 ? 1.1 : 0.9;
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    this.t.update((v) => {
+      const k = Math.min(2.5, Math.max(0.3, v.k * factor));
+      const scale = k / v.k;
+      // Zoom toward the cursor.
+      return { k, x: px - (px - v.x) * scale, y: py - (py - v.y) * scale };
+    });
+  }
+
+  resetView(): void {
+    const t = this.topology();
+    if (t) this.buildGraph(t);
+    this.selected.set(null);
+  }
+
+  clearSelection(): void {
+    this.selected.set(null);
+  }
+
+  // ── Detail panel ─────────────────────────────────────────────────
+
+  detailRows(n: GraphNode): { label: string; value: string; mono?: boolean }[] {
+    if (n.kind === 'user') {
+      const u = n.data as TUser;
+      return [
+        { label: 'Email', value: u.email },
+        { label: 'Role', value: u.role },
+        { label: 'Sparks', value: String(u.sparks.length) },
+      ];
+    }
+    if (n.kind === 'spark') {
+      const s = n.data as TSpark;
+      return [
+        { label: 'Name', value: s.name },
+        { label: 'Status', value: s.status },
+        { label: 'Adoption', value: s.adoptionStatus },
+        { label: 'Owner', value: s.ownerEmail || '—' },
+        { label: 'Shared with you', value: s.shared ? 'yes' : 'no' },
+        { label: 'Clients', value: String(s.devices.length) },
+      ];
+    }
+    if (n.kind === 'device') {
+      const d = n.data as TDevice;
+      return [
+        { label: 'Name', value: d.name },
+        { label: 'Type', value: d.type },
+        { label: 'Status', value: d.status },
+        { label: 'Address', value: d.assignedIp || '—', mono: true },
+        { label: 'Owner', value: d.ownerEmail || '—' },
+      ];
+    }
+    return [];
+  }
+
+  iconFor(kind: NodeKind): string {
+    return kind === 'user' ? 'users' : kind === 'spark' ? 'server' : kind === 'device' ? 'laptop-mobile' : 'sitemap';
+  }
+
+  kindLabel(kind: NodeKind): string {
+    return kind === 'user' ? 'User' : kind === 'spark' ? 'Spark' : kind === 'device' ? 'Device' : '';
   }
 
   statusClass(status: string): string {
