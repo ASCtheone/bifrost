@@ -99,6 +99,14 @@
         This router is linked to your account, but there's no spark to connect to.
         Install a spark — it'll connect automatically once one is adopted.
       </div>
+      <!-- Unlock override / safe mode: tunnel down, only the control plane + GitHub reachable. -->
+      <div id="safeBanner" class="hidden" style="background:rgba(231,150,19,.12);border:1px solid rgba(231,150,19,.35);border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13px;color:var(--muted);">
+        <b style="color:var(--warning)">Safe mode is ON.</b>
+        The tunnel is down and only the control plane + GitHub are reachable — so the router
+        can always be managed and updated. LAN internet is otherwise blocked. Resume when the
+        VPN is fixed.
+      </div>
+
       <label for="location">Location</label>
       <select id="location"></select>
 
@@ -114,6 +122,9 @@
       <div class="btns">
         <button class="primary" id="actionBtn">Connect</button>
         <button class="ghost icon-btn" id="refresh" title="Refresh from master" aria-label="Refresh">↻</button>
+      </div>
+      <div class="btns" style="margin-top:8px">
+        <button class="ghost" id="safeBtn" style="width:100%" title="Emergency access: drop the tunnel and allow only the control plane + GitHub">Unlock override (safe mode)</button>
       </div>
     </div>
 
@@ -186,6 +197,18 @@
       if (document.activeElement !== $('killswitch')) $('killswitch').checked = !!data.killswitch;
       if (document.activeElement !== $('routeLan')) $('routeLan').checked = !!data.routeLan;
       paintButton(data);
+      paintSafe(data);
+    }
+  }
+
+  // Safe-mode banner + toggle button follow the reported state.
+  function paintSafe(data) {
+    show('safeBanner', !!data.safeMode);
+    var s = $('safeBtn');
+    if (data.safeMode) {
+      s.textContent = 'Resume normal operation'; s.className = 'primary'; s.dataset.act = 'resume';
+    } else {
+      s.textContent = 'Unlock override (safe mode)'; s.className = 'ghost'; s.dataset.act = 'unlock';
     }
   }
 
@@ -256,6 +279,7 @@
   $('killswitch').onchange = saveSettings;
   $('routeLan').onchange = saveSettings;
   $('actionBtn').onclick = function () { post({ action: this.dataset.act }, this); };
+  $('safeBtn').onclick = function () { post({ action: this.dataset.act }, this); };
   $('refresh').onclick = function () { backgroundRefresh(); };
 
   // Live on open: immediate status, a background config pull, then keep both fresh.

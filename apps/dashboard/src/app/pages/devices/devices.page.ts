@@ -29,6 +29,7 @@ interface DeviceRow {
   readonly updateAvailable?: boolean;
   readonly backupAvailable?: boolean;
   readonly pendingAction?: string | null;
+  readonly safeMode?: boolean;
 }
 
 interface DevicesResponse {
@@ -205,6 +206,7 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
               <span class="device-type">{{ device.type }}</span>
               <span class="device-status-pill" [attr.data-status]="device.status">{{ device.status }}</span>
               @if (device.clientVersion) { <span class="device-version">v{{ device.clientVersion }}</span> }
+              @if (device.safeMode) { <span class="device-safe-pill" title="Unlock override: tunnel down, only the control plane + GitHub reachable">Safe mode</span> }
             </div>
             @if (device.clientVersion) {
               <div class="device-update">
@@ -216,6 +218,13 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
                   }
                   @if (device.backupAvailable && isAdmin()) {
                     <button class="device-revert-btn" (click)="revertDevice(device)">Revert</button>
+                  }
+                  @if (isAdmin()) {
+                    @if (device.safeMode) {
+                      <button class="device-safe-btn on" (click)="toggleSafeMode(device)" title="Resume normal operation on the router">Resume</button>
+                    } @else {
+                      <button class="device-safe-btn" (click)="toggleSafeMode(device)" title="Emergency access: drop the tunnel, allow only the control plane + GitHub">Unlock</button>
+                    }
                   }
                 }
               </div>
@@ -319,6 +328,10 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
     .device-update-btn { padding: 2px 9px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-size: 0.6rem; font-weight: 600; cursor: pointer; }
     .device-update-btn:hover { filter: brightness(1.08); }
     .device-revert-btn { padding: 2px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-secondary); font-size: 0.6rem; font-weight: 600; cursor: pointer; }
+    .device-safe-pill { padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, #f59e0b 20%, transparent); color: #f59e0b; font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+    .device-safe-btn { padding: 2px 9px; border-radius: 8px; border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent); background: transparent; color: #f59e0b; font-size: 0.6rem; font-weight: 600; cursor: pointer; }
+    .device-safe-btn:hover { background: color-mix(in srgb, #f59e0b 12%, transparent); }
+    .device-safe-btn.on { background: #f59e0b; color: #1a1a1a; border-color: #f59e0b; }
     .device-update-progress { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.6rem; font-weight: 600; color: var(--accent); }
     .device-status-pill { font-size: 0.55rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 6px; border-radius: 6px; }
     .device-status-pill[data-status="pending"] { background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent); color: var(--warning, #f59e0b); }
@@ -550,6 +563,26 @@ export class DevicesPage implements OnInit {
       return;
     }
     this.pollDeviceUpdate(device.id, from, '');
+  }
+
+  // Toggle the router's unlock override (safe mode). Queued as a one-shot action the
+  // router applies on its next poll; enabling it drops the tunnel, so confirm first.
+  async toggleSafeMode(device: DeviceRow): Promise<void> {
+    const turningOn = !device.safeMode;
+    if (turningOn) {
+      const ok = await this.confirmSvc.confirm({
+        title: 'Unlock override (safe mode)',
+        message: `Put "${device.name}" into safe mode? Its VPN tunnel is dropped and only the control plane + GitHub stay reachable — for recovery when the tunnel is broken. LAN internet is otherwise blocked until you resume.`,
+        confirmLabel: 'Unlock',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    try {
+      await this.api.post(`/devices/${device.id}/safe-mode`, { on: turningOn });
+    } finally {
+      await this.fetchDevices();
+    }
   }
 
   private pollDeviceUpdate(id: string, fromVersion: string, target: string): void {

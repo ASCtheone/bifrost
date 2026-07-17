@@ -24,7 +24,7 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.9.26
+BIFROST_VERSION=0.9.27
 # Self-update: a persistent backup + pending marker (STATE_DIR=/tmp is volatile).
 UPDATE_DIR=/etc/bifrost
 BAK="$UPDATE_DIR/bifrost.bak"
@@ -107,6 +107,7 @@ fetch_config() {
 	if ! curl -fsS --max-time 20 \
 		-H "X-Bifrost-Version: $BIFROST_VERSION" \
 		-H "X-Bifrost-Backup: $backup" \
+		-H "X-Bifrost-Safemode: $([ "$(cfg_get safe_mode)" = 1 ] && echo 1 || echo 0)" \
 		"$(api)/provision/$token" -o "$RESP" 2>/dev/null; then
 		log "could not reach master at $(api)"
 		return 1
@@ -127,6 +128,8 @@ handle_pending_action() {
 	case "$action" in
 		update) [ -n "$latest" ] && [ "$latest" != "$BIFROST_VERSION" ] && do_update ;;
 		revert) do_revert ;;
+		unlock) safe_on ;;   # remote unlock override (safe mode) from the dashboard
+		resume) safe_off ;;  # remote resume normal operation
 	esac
 }
 

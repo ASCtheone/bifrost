@@ -22,6 +22,7 @@ pub fn routes() -> Router<AppState> {
         // Router client remote update/revert (applied by the router on its next poll).
         .route("/devices/:deviceId/update", post(update_device_client))
         .route("/devices/:deviceId/revert", post(revert_device_client))
+        .route("/devices/:deviceId/safe-mode", post(safe_mode_device))
         .route("/devices/:deviceId/config", get(get_device_config))
         .route("/devices/:deviceId/logs", get(get_logs).post(post_log))
 }
@@ -56,6 +57,7 @@ async fn list_devices(State(st): State<AppState>, AdminAuth(auth): AdminAuth) ->
                 "updateAvailable": d.client_version.as_deref().map_or(false, |v| crate::release::version_lt(v, &latest)),
                 "backupAvailable": d.device_backup_available,
                 "pendingAction": d.pending_action,
+                "safeMode": d.safe_mode,
             })
         })
         .collect();
@@ -140,6 +142,7 @@ async fn create_device(
         client_version: None,
         pending_action: None,
         device_backup_available: false,
+        safe_mode: false,
     };
     device_repo::put_device(&st.pool, &device).await?;
 
@@ -259,6 +262,23 @@ async fn revert_device_client(
         .ok_or_else(|| AppError::NotFound("Device not found".into()))?;
     device_repo::set_pending_action(&st.pool, &device_id, "revert").await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /devices/{deviceId}/safe-mode {"on": bool} — queue the router's unlock override
+/// (safe mode) on/off. The router picks it up on its next provision poll.
+async fn safe_mode_device(
+    State(st): State<AppState>,
+    AdminAuth(_auth): AdminAuth,
+    Path(device_id): Path<String>,
+    Json(body): Json<Value>,
+) -> AppResult<Json<Value>> {
+    device_repo::get_device(&st.pool, &device_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Device not found".into()))?;
+    let on = body.get("on").and_then(|v| v.as_bool()).unwrap_or(false);
+    let action = if on { "unlock" } else { "resume" };
+    device_repo::set_pending_action(&st.pool, &device_id, action).await?;
+    Ok(Json(json!({ "ok": true, "pendingAction": action })))
 }
 
 // ── GET /devices/{deviceId}/config ──────────────────────────────

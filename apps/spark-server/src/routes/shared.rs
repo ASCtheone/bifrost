@@ -266,6 +266,7 @@ pub async fn create_device_for_owner(
         client_version: None,
         pending_action: None,
         device_backup_available: false,
+        safe_mode: false,
     };
     device_repo::put_device(pool, &device).await?;
     Ok(device)

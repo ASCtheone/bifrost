@@ -158,6 +158,9 @@ pub struct Device {
     /// Whether the router has a rollback backup staged (drives its Revert button).
     #[serde(default)]
     pub device_backup_available: bool,
+    /// Whether the router is in safe mode (unlock override) — self-reported each poll.
+    #[serde(default)]
+    pub safe_mode: bool,
 }
 
 // ── Peer (WireGuard peer) ────────────────────────────────────────

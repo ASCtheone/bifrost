@@ -183,14 +183,16 @@ pub async fn update_client_report(
     device_id: &str,
     version: &str,
     backup: bool,
+    safe_mode: bool,
 ) -> AppResult<()> {
     let now = now_iso();
     sqlx::query(
-        "UPDATE devices SET client_version = ?, device_backup_available = ?, last_seen = ?, \
-         updated_at = ? WHERE device_id = ?",
+        "UPDATE devices SET client_version = ?, device_backup_available = ?, safe_mode = ?, \
+         last_seen = ?, updated_at = ? WHERE device_id = ?",
     )
     .bind(version)
     .bind(backup)
+    .bind(safe_mode)
     .bind(&now)
     .bind(&now)
     .bind(device_id)

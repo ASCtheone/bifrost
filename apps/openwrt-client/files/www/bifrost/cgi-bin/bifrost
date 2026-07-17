@@ -59,6 +59,9 @@ case "$action" in
 	connect)    "$BIN" up >/dev/null 2>&1; emit "$(status_json)" ;;
 	disconnect) "$BIN" down >/dev/null 2>&1; emit "$(status_json)" ;;
 	refresh)    "$BIN" refresh >/dev/null 2>&1; emit "$(status_json)" ;;
+	# Unlock override / safe mode: tunnel down, only the control plane + GitHub allowed.
+	unlock)     "$BIN" unlock >/dev/null 2>&1; emit "$(status_json)" ;;
+	resume)     "$BIN" resume >/dev/null 2>&1; emit "$(status_json)" ;;
 	# Config-only pull (no reconnect) — the UI's background refresh, safe to run while
 	# the router is disconnected.
 	fetch)      "$BIN" fetch >/dev/null 2>&1; emit "$(status_json)" ;;

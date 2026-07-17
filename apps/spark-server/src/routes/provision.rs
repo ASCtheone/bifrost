@@ -88,7 +88,8 @@ async fn provision(
     let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
     if let Some(v) = header("x-bifrost-version").filter(|s| !s.is_empty()) {
         let backup = header("x-bifrost-backup") == Some("1");
-        device_repo::update_client_report(&st.pool, &device.device_id, v, backup).await?;
+        let safe_mode = header("x-bifrost-safemode") == Some("1");
+        device_repo::update_client_report(&st.pool, &device.device_id, v, backup, safe_mode).await?;
     }
     // One-shot self-update instruction (set by the dashboard's Update/Revert), cleared as
     // it's handed over so a missed poll doesn't loop.
