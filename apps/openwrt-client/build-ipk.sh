@@ -9,7 +9,7 @@
 # Usage: ./build-ipk.sh [output-dir]
 set -euo pipefail
 
-VERSION=0.9.25
+VERSION=0.9.26
 here="$(cd "$(dirname "$0")" && pwd)"
 outdir="${1:-$here/dist}"
 mkdir -p "$outdir"

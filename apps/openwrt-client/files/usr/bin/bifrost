@@ -24,7 +24,7 @@ CURNODE="$STATE_DIR/current.node"
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.9.25
+BIFROST_VERSION=0.9.26
 # Self-update: a persistent backup + pending marker (STATE_DIR=/tmp is volatile).
 UPDATE_DIR=/etc/bifrost
 BAK="$UPDATE_DIR/bifrost.bak"
@@ -256,6 +256,73 @@ apply_killswitch() {
 	[ "$(cfg_get killswitch)" = "1" ] && killswitch_on || killswitch_off
 }
 
+# ── safe mode / unlock override ─────────────────────────────────
+# When the tunnel won't come up, the 0.0.0.0/0-via-WireGuard default route black-holes
+# everything — including the router's own path to the control plane, so it can't even
+# fetch a fix. Safe mode is the escape hatch: tear the tunnel down (restoring the WAN
+# default route) and install a LAN-forward whitelist so LAN clients may reach ONLY the
+# control plane + GitHub (for self-update) and DNS — everything else is dropped, so no
+# leak. The router's own egress is left unrestricted so it can pull updates and keep
+# talking to the master to be healed.
+
+SAFE_CHAIN=bifrost_safe
+
+# Hosts kept reachable in safe mode: the control plane (config, commands, the opkg feed)
+# and GitHub (release assets). The master's own host is derived, so a self-hosted control
+# plane on another domain is whitelisted automatically.
+safe_hosts() {
+	local mhost; mhost=$(master); mhost=${mhost#*://}; mhost=${mhost%%/*}
+	echo "$mhost asc.ninja dash.asc.ninja github.com api.github.com codeload.github.com objects.githubusercontent.com raw.githubusercontent.com github-releases.githubusercontent.com ghcr.io"
+}
+
+# IPv4s currently backing the whitelist hosts (Cloudflare/GitHub rotate these, so the
+# chain is rebuilt periodically while safe mode is engaged). Loopback is excluded.
+safe_ips() {
+	local h
+	for h in $(safe_hosts); do nslookup "$h" 2>/dev/null; done \
+		| grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -Ev '^(127\.|0\.0\.0\.0$)' | sort -u
+}
+
+# (Re)build the LAN-forward whitelist chain: allow DNS + the resolved management IPs,
+# drop everything else headed off-LAN. Only LAN forwarding is filtered — the router's
+# own traffic is untouched so opkg/self-update still work.
+safe_fw_build() {
+	local br ip n=0
+	command -v iptables >/dev/null 2>&1 || { log "iptables not found; safe mode unavailable"; return 1; }
+	br=$(lan_dev)
+	iptables -N "$SAFE_CHAIN" 2>/dev/null
+	iptables -F "$SAFE_CHAIN"
+	iptables -A "$SAFE_CHAIN" -o "$br" -j RETURN                                    # back into the LAN
+	iptables -A "$SAFE_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+	iptables -A "$SAFE_CHAIN" -p udp --dport 53 -j RETURN                           # DNS
+	iptables -A "$SAFE_CHAIN" -p tcp --dport 53 -j RETURN
+	for ip in $(safe_ips); do iptables -A "$SAFE_CHAIN" -d "$ip" -j RETURN; n=$((n + 1)); done
+	iptables -A "$SAFE_CHAIN" -j DROP                                               # block the rest
+	iptables -C FORWARD -i "$br" -j "$SAFE_CHAIN" 2>/dev/null || iptables -I FORWARD -i "$br" -j "$SAFE_CHAIN"
+	log "safe mode: whitelisting $n management address(es); other LAN internet blocked"
+}
+
+safe_fw_clear() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	iptables -D FORWARD -i "$(lan_dev)" -j "$SAFE_CHAIN" 2>/dev/null
+	iptables -F "$SAFE_CHAIN" 2>/dev/null
+	iptables -X "$SAFE_CHAIN" 2>/dev/null
+}
+
+safe_on() {
+	cfg_set safe_mode 1
+	killswitch_off            # the tunnel kill switch is replaced by the safe whitelist
+	teardown                  # drop the tunnel → the router's WAN default route returns
+	safe_fw_build
+	log "SAFE MODE ENGAGED — tunnel down, WAN restored, LAN limited to the control plane + GitHub"
+}
+
+safe_off() {
+	cfg_set safe_mode 0
+	safe_fw_clear
+	log "safe mode released — resuming normal operation"
+}
+
 # ── tunnel health ───────────────────────────────────────────────
 
 handshake_age() {
@@ -360,6 +427,7 @@ cmd_status() {
 	echo "  registered:  $([ -n "$(cfg_get provision_token)" ] && echo yes || echo "no (code: $(cfg_get device_code))")"
 	echo "  location:    $(cfg_get location)"
 	echo "  kill switch: $([ "$(cfg_get killswitch)" = 1 ] && echo on || echo off)"
+	echo "  safe mode:   $([ "$(cfg_get safe_mode)" = 1 ] && echo "ON (unlock override — tunnel down, control plane + GitHub only)" || echo off)"
 	echo "  route LAN:   $([ "$(cfg_get route_lan)" = 1 ] && echo yes || echo no)"
 	age=$(handshake_age)
 	[ "$age" = none ] && echo "  tunnel:      down" || echo "  tunnel:      up (handshake ${age}s ago)"
@@ -375,11 +443,12 @@ cmd_json() {
 	# Available locations (from the last provision), for the UI picker.
 	nodes='[]'
 	[ -f "$RESP" ] && nodes=$(jq -c '[.nodes[] | {nodeId, name, location, role}]' "$RESP" 2>/dev/null || echo '[]')
-	printf '{"state":"%s","handshakeAge":"%s","version":"%s","uiUrl":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
+	printf '{"state":"%s","handshakeAge":"%s","version":"%s","uiUrl":"%s","registered":%s,"deviceCode":"%s","master":"%s","location":"%s","killswitch":%s,"safeMode":%s,"routeLan":%s,"enabled":%s,"currentNode":"%s","nodes":%s}\n' \
 		"$state" "$age" "$BIFROST_VERSION" "$(ui_url)" \
 		"$([ -n "$token" ] && echo true || echo false)" \
 		"$(cfg_get device_code)" "$(master)" "$(cfg_get location)" \
 		"$([ "$(cfg_get killswitch)" = 1 ] && echo true || echo false)" \
+		"$([ "$(cfg_get safe_mode)" = 1 ] && echo true || echo false)" \
 		"$([ "$(cfg_get route_lan)" = 1 ] && echo true || echo false)" \
 		"$([ "$(cfg_get enabled)" = 1 ] && echo true || echo false)" \
 		"$(cat "$CURNODE" 2>/dev/null)" "$nodes"
@@ -656,6 +725,15 @@ case "${1:-}" in
 	self-update) do_update ;;
 	self-revert) do_revert ;;
 	killswitch) apply_killswitch ;;
+	# Unlock override / safe mode: drop the tunnel and let ONLY the control plane +
+	# GitHub through (everything else blocked), so a bricked router can recover.
+	unlock | safe-on) safe_on ;;
+	resume | safe-off) safe_off ;;
+	safe-status)
+		echo "safe mode: $([ "$(cfg_get safe_mode)" = 1 ] && echo ON || echo off)"
+		echo "watchdog:  $([ "$(cfg_get safe_watchdog)" = 0 ] && echo off || echo on) (after $(cfg_get safe_watchdog_fails 2>/dev/null || echo 12) failed connects)"
+		echo "whitelist: $(safe_hosts)"
+		;;
 	up) cmd_up ;;
 	down) cmd_down ;;
 	status) cmd_status ;;
@@ -695,30 +773,60 @@ case "${1:-}" in
 		interval=$(cfg_get refresh_interval); [ -n "$interval" ] || interval=300
 		every=$((interval / 5)); [ "$every" -ge 1 ] || every=1
 		tick=0
+		fail=0
 		while :; do
+			# Safe mode short-circuits everything: the tunnel stays down, the LAN
+			# whitelist is refreshed, and we keep polling the master so a pushed
+			# update/revert — or a manual `bifrost resume` — can heal the router.
+			if [ "$(cfg_get safe_mode)" = "1" ]; then
+				if [ $((tick % every)) -eq 0 ]; then
+					safe_fw_build
+					fetch_config >/dev/null 2>&1
+				fi
+				tick=$((tick + 1)); sleep 5; continue
+			fi
+
 			apply_killswitch
 			if [ -z "$(cfg_get provision_token)" ]; then
 				[ -n "$(cfg_get device_code)" ] && poll_once   # complete pairing
 			elif [ "$(cfg_get enabled)" = "1" ]; then
 				if healthy; then
+					fail=0
 					if [ $((tick % every)) -eq 0 ]; then
 						fetch_config && maybe_return_primary
 						connect >/dev/null 2>&1 || true   # refresh; reapply only if changed
 					fi
 				else
 					log "tunnel down — connecting (failover)"
-					connect || log "connect failed; retrying"
+					if connect >/dev/null 2>&1; then
+						fail=0
+					else
+						fail=$((fail + 1))
+						log "connect failed ($fail); retrying"
+						# Anti-brick watchdog: after sustained failure, fall back to safe
+						# mode so the router keeps management/self-update reachability
+						# instead of black-holing all WAN into the dead tunnel.
+						wd=$(cfg_get safe_watchdog); [ -n "$wd" ] || wd=1
+						thr=$(cfg_get safe_watchdog_fails); [ -n "$thr" ] || thr=12
+						if [ "$wd" = "1" ] && [ "$fail" -ge "$thr" ]; then
+							log "sustained tunnel failure — engaging safe mode (anti-brick)"
+							safe_on
+						fi
+					fi
 				fi
 			else
-				# Disabled but a tunnel is up → tear it down.
-				[ "$(handshake_age)" != none ] && teardown
+				# Disabled → ensure nothing lingers, even a dead tunnel that never
+				# handshook (its default route would otherwise still black-hole WAN).
+				if [ "$(handshake_age)" != none ] || uci -q get "network.$(ifname)" >/dev/null 2>&1; then
+					teardown
+				fi
 			fi
 			tick=$((tick + 1))
 			sleep 5
 		done
 		;;
 	*)
-		echo "Usage: bifrost {bootstrap|save-token <t>|poll|up|down|status|json|refresh|run}" >&2
+		echo "Usage: bifrost {bootstrap|save-token <t>|poll|up|down|status|json|refresh|unlock|resume|safe-status|run}" >&2
 		exit 1
 		;;
 esac
