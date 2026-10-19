@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .route("/devices/:deviceId/revert", post(revert_device_client))
         .route("/devices/:deviceId/safe-mode", post(safe_mode_device))
         .route("/devices/:deviceId/config", get(get_device_config))
+        .route("/devices/:deviceId/health", get(get_device_health))
         .route("/devices/:deviceId/logs", get(get_logs).post(post_log))
 }
 
@@ -143,6 +144,7 @@ async fn create_device(
         pending_action: None,
         device_backup_available: false,
         safe_mode: false,
+        node_reports: None,
     };
     device_repo::put_device(&st.pool, &device).await?;
 
@@ -279,6 +281,25 @@ async fn safe_mode_device(
     let action = if on { "unlock" } else { "resume" };
     device_repo::set_pending_action(&st.pool, &device_id, action).await?;
     Ok(Json(json!({ "ok": true, "pendingAction": action })))
+}
+
+// ── GET /devices/{deviceId}/health ──────────────────────────────
+
+/// Can this router get a tunnel to each of its sparks? Per-spark checks (heartbeat,
+/// WireGuard server, endpoint, subnet, client present, router-reported handshake) —
+/// see conn_health.
+async fn get_device_health(
+    State(st): State<AppState>,
+    AdminAuth(auth): AdminAuth,
+    Path(device_id): Path<String>,
+) -> AppResult<Json<Value>> {
+    let device = device_repo::get_device(&st.pool, &device_id)
+        .await?
+        .filter(|d| auth.is_superadmin() || d.owner_email == auth.email)
+        .ok_or_else(|| AppError::NotFound("Device not found".into()))?;
+    let all_nodes = node_repo::query_all_nodes(&st.pool).await?;
+    let health = crate::conn_health::device_health(&device, &all_nodes, chrono::Utc::now());
+    Ok(Json(serde_json::to_value(health).map_err(|e| AppError::Other(anyhow::anyhow!("serialize health: {e}")))?))
 }
 
 // ── GET /devices/{deviceId}/config ──────────────────────────────

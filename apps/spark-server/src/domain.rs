@@ -161,6 +161,10 @@ pub struct Device {
     /// Whether the router is in safe mode (unlock override) — self-reported each poll.
     #[serde(default)]
     pub safe_mode: bool,
+    /// The router's last handshake result per spark, `{nodeId: {"ok": bool, "at": iso}}`,
+    /// self-reported each poll (X-Bifrost-Nodes). Feeds the connection health check.
+    #[serde(default)]
+    pub node_reports: Option<Json<serde_json::Value>>,
 }
 
 // ── Peer (WireGuard peer) ────────────────────────────────────────

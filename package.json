@@ -1,6 +1,6 @@
 {
   "name": "bifrost-monorepo",
-  "version": "0.9.27",
+  "version": "0.9.28",
   "private": true,
   "workspaces": [
     "apps/*"
@@ -19,5 +19,12 @@
     "@fortawesome/pro-light-svg-icons": "^7.2.0",
     "@fortawesome/pro-regular-svg-icons": "^7.2.0",
     "@fortawesome/pro-solid-svg-icons": "^7.2.0"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "@parcel/watcher": true,
+    "lmdb": true,
+    "msgpackr-extract": true,
+    "nx": true
   }
 }

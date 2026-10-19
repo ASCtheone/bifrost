@@ -6,6 +6,7 @@ import { AuthService } from '../../services/auth.service';
 import { ConfirmService } from '../../services/confirm.service';
 import { environment } from '../../../environments/environment';
 import QRCode from 'qrcode';
+import { DeviceHealthDialog } from './device-health.dialog';
 
 type DeviceType = 'router' | 'phone' | 'tablet' | 'laptop';
 
@@ -60,7 +61,7 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
 
 @Component({
   selector: 'app-devices',
-  imports: [FormsModule, FaIconComponent],
+  imports: [FormsModule, FaIconComponent, DeviceHealthDialog],
   template: `
     <div class="page-header">
       <h2>Devices</h2>
@@ -189,6 +190,10 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
       </div>
     }
 
+    @if (healthDevice(); as hd) {
+      <app-device-health-dialog [deviceId]="hd.id" [deviceName]="hd.name" (closed)="healthDevice.set(null)" />
+    }
+
     <!-- Device Grid -->
     <div class="device-grid">
       @for (device of devices(); track device.id) {
@@ -259,6 +264,9 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
               } @else {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
               }
+            </button>
+            <button class="action-btn" (click)="healthDevice.set(device)" title="Connection health — can it reach each spark?">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>
             </button>
             <button class="action-btn" (click)="downloadConfig(device)" title="Download WireGuard config">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4m4-5l5 5 5-5m-5 5V3"/></svg>
@@ -401,6 +409,7 @@ export class DevicesPage implements OnInit {
   newDevice = { name: '', type: 'laptop' as DeviceType };
 
   syncingDeviceId = signal<string | null>(null);
+  healthDevice = signal<DeviceRow | null>(null);
   assignDeviceId = signal<string | null>(null);
   assignDeviceEmail = '';
   userListForAssign = signal<{ email: string; displayName: string }[]>([]);

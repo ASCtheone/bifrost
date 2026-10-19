@@ -68,6 +68,32 @@ async fn wg_conf(
         .into_response())
 }
 
+/// Parse `X-Bifrost-Nodes: <nodeId>=ok:<age s>,<nodeId>=fail:<age s>` into
+/// `{nodeId: {"ok": bool, "at": iso}}`. The router sends ages, not timestamps — its
+/// clock may be wrong (no RTC) — so `at` is anchored to our own clock. Malformed
+/// entries are skipped; the header is untrusted input.
+fn parse_node_reports(raw: &str, now: chrono::DateTime<chrono::Utc>) -> serde_json::Map<String, Value> {
+    const MAX_ENTRIES: usize = 32;
+    raw.split(',')
+        .take(MAX_ENTRIES)
+        .filter_map(|entry| {
+            let (id, rest) = entry.trim().split_once('=')?;
+            let (state, age) = rest.split_once(':')?;
+            let ok = match state {
+                "ok" => true,
+                "fail" => false,
+                _ => return None,
+            };
+            let age: i64 = age.parse().ok().filter(|a| (0..=30 * 86_400).contains(a))?;
+            let valid_id = !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            valid_id.then(|| {
+                let at = (now - chrono::Duration::seconds(age)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                (id.to_string(), json!({ "ok": ok, "at": at }))
+            })
+        })
+        .collect()
+}
+
 async fn provision(
     State(st): State<AppState>,
     Path(token): Path<String>,
@@ -90,6 +116,14 @@ async fn provision(
         let backup = header("x-bifrost-backup") == Some("1");
         let safe_mode = header("x-bifrost-safemode") == Some("1");
         device_repo::update_client_report(&st.pool, &device.device_id, v, backup, safe_mode).await?;
+    }
+    // Per-spark handshake results, for the connection health check.
+    if let Some(raw) = header("x-bifrost-nodes").filter(|s| !s.is_empty()) {
+        let reports = parse_node_reports(raw, chrono::Utc::now());
+        if !reports.is_empty() {
+            let current = device.node_reports.as_ref().map(|j| &j.0);
+            device_repo::merge_node_reports(&st.pool, &device.device_id, current, &reports).await?;
+        }
     }
     // One-shot self-update instruction (set by the dashboard's Update/Revert), cleared as
     // it's handed over so a missed poll doesn't loop.
@@ -130,4 +164,29 @@ async fn provision(
         "latestVersion": latest,
         "pendingAction": pending_action,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_node_reports;
+    use chrono::{DateTime, Utc};
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-10-19T12:00:00Z").unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn parses_ok_and_fail_anchored_to_our_clock() {
+        let r = parse_node_reports("node-home=fail:30, node-apt=ok:120", now());
+        assert_eq!(r["node-home"]["ok"], false);
+        assert_eq!(r["node-home"]["at"], "2026-10-19T11:59:30Z");
+        assert_eq!(r["node-apt"]["ok"], true);
+    }
+
+    #[test]
+    fn skips_malformed_entries() {
+        let r = parse_node_reports("good=ok:5,bad,x=maybe:1,y=ok:-3,z=ok:abc,a b=ok:1,=ok:1", now());
+        assert_eq!(r.len(), 1);
+        assert!(r.contains_key("good"));
+    }
 }

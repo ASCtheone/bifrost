@@ -15,6 +15,8 @@ pub struct SparkServer {
     pub public_key: String,
     pub server_port: i64,
     pub server_address: String,
+    /// Whether the WireGuard server is switched on (a paused spark disables it).
+    pub enabled: bool,
 }
 
 /// Find the spark server snapshot for a node, if the agent has reported one.
@@ -61,6 +63,7 @@ pub fn spark_server_for(node: &Node) -> Option<SparkServer> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        enabled: s.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
     })
 }
 
@@ -147,16 +150,20 @@ pub fn node_endpoint(node: &Node) -> Option<String> {
 /// owner-compatible with the device, with a known server public key and an endpoint
 /// (see `node_endpoint`). Consolidates the logic duplicated across provision-device,
 /// auth-provision, and get-device-config.
+/// Whether `node` is one of the sparks `device` gets a config for: adopted, and
+/// owner-compatible (only excluded when both owners are set and differ).
+pub fn node_serves_device(device: &Device, node: &Node) -> bool {
+    if node.adoption_status != "adopted" {
+        return false;
+    }
+    let (node_owner, device_owner) = (node.owner_email.as_str(), device.owner_email.as_str());
+    node_owner.is_empty() || device_owner.is_empty() || node_owner == device_owner
+}
+
 pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeConfig> {
-    let device_owner = device.owner_email.as_str();
     let mut out = Vec::new();
     for node in nodes {
-        if node.adoption_status != "adopted" {
-            continue;
-        }
-        // Owner match: only skip when both owners are set and differ.
-        let node_owner = node.owner_email.as_str();
-        if !node_owner.is_empty() && !device_owner.is_empty() && node_owner != device_owner {
+        if !node_serves_device(device, node) {
             continue;
         }
         // From here the node is a candidate for this device, so a skip is a real reason
@@ -267,6 +274,7 @@ pub async fn create_device_for_owner(
         pending_action: None,
         device_backup_available: false,
         safe_mode: false,
+        node_reports: None,
     };
     device_repo::put_device(pool, &device).await?;
     Ok(device)

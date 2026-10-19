@@ -174,6 +174,24 @@ pub async fn update_device_ip(
     Ok(())
 }
 
+/// Store the router's per-spark handshake results (see conn_health). Reports are
+/// merged per node, so a spark the router didn't try this round keeps its last result.
+pub async fn merge_node_reports(
+    pool: &SqlitePool,
+    device_id: &str,
+    current: Option<&serde_json::Value>,
+    reports: &serde_json::Map<String, serde_json::Value>,
+) -> AppResult<()> {
+    let mut merged = current.and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    merged.extend(reports.iter().map(|(k, v)| (k.clone(), v.clone())));
+    sqlx::query("UPDATE devices SET node_reports = ? WHERE device_id = ?")
+        .bind(sqlx::types::Json(serde_json::Value::Object(merged)))
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ── Router client self-update ────────────────────────────────────
 
 /// Record the router client's reported version + whether it has a rollback backup, from

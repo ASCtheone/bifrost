@@ -4,6 +4,7 @@
 
 mod auth;
 mod config;
+mod conn_health;
 mod crypto;
 mod db;
 mod domain;
