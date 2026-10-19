@@ -68,6 +68,11 @@ async fn wg_conf(
         .into_response())
 }
 
+/// A node id as the router may report it (untrusted header input).
+fn is_node_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Parse `X-Bifrost-Nodes: <nodeId>=ok:<age s>,<nodeId>=fail:<age s>` into
 /// `{nodeId: {"ok": bool, "at": iso}}`. The router sends ages, not timestamps — its
 /// clock may be wrong (no RTC) — so `at` is anchored to our own clock. Malformed
@@ -85,8 +90,7 @@ fn parse_node_reports(raw: &str, now: chrono::DateTime<chrono::Utc>) -> serde_js
                 _ => return None,
             };
             let age: i64 = age.parse().ok().filter(|a| (0..=30 * 86_400).contains(a))?;
-            let valid_id = !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-            valid_id.then(|| {
+            is_node_id(id).then(|| {
                 let at = (now - chrono::Duration::seconds(age)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
                 (id.to_string(), json!({ "ok": ok, "at": at }))
             })
@@ -116,6 +120,9 @@ async fn provision(
         let backup = header("x-bifrost-backup") == Some("1");
         let safe_mode = header("x-bifrost-safemode") == Some("1");
         device_repo::update_client_report(&st.pool, &device.device_id, v, backup, safe_mode).await?;
+        // Only a router that reports a version knows this header; empty = tunnel down.
+        let current = header("x-bifrost-current").map(str::trim).filter(|id| is_node_id(id));
+        device_repo::set_current_node(&st.pool, &device.device_id, current).await?;
     }
     // Per-spark handshake results, for the connection health check.
     if let Some(raw) = header("x-bifrost-nodes").filter(|s| !s.is_empty()) {

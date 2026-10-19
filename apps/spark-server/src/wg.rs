@@ -51,6 +51,24 @@ pub fn assign_ip(device_id: &str, server_address: Option<&str>) -> String {
     format!("{base}.{octet4}")
 }
 
+/// A device's tunnel address on one particular WireGuard server: its host octet,
+/// rebased onto that server's /24.
+///
+/// A device has a single stored address, but every spark runs its own server, often
+/// on a different subnet (10.13.0.0/24 on one, a pre-existing 192.168.3.0/24 on
+/// another). One shared address can only fit one of them, so the address is derived
+/// per server instead — the same device keeps the same host number everywhere. An
+/// unknown or unparseable server address leaves the stored address as is.
+pub fn ip_on_server(assigned_ip: &str, server_address: &str) -> String {
+    let host = assigned_ip.split('/').next().unwrap_or(assigned_ip);
+    let server = server_address.split('/').next().unwrap_or("");
+    let s: Vec<&str> = server.split('.').collect();
+    match (s.as_slice(), host.rsplit('.').next()) {
+        ([a, b, c, _], Some(octet)) if !a.is_empty() && host.contains('.') => format!("{a}.{b}.{c}.{octet}"),
+        _ => host.to_string(),
+    }
+}
+
 /// Parameters for building a client WireGuard config.
 pub struct WgConfigParams<'a> {
     pub private_key: &'a str,
@@ -112,6 +130,19 @@ pub fn ip_in_server_subnet(ip: &str, server_address: &str) -> bool {
 #[cfg(test)]
 mod ip_tests {
     use super::*;
+
+    #[test]
+    fn ip_on_server_keeps_the_host_and_takes_the_servers_subnet() {
+        assert_eq!(ip_on_server("192.168.3.248", "10.13.0.1/24"), "10.13.0.248");
+        assert_eq!(ip_on_server("10.13.0.248", "192.168.3.1/24"), "192.168.3.248");
+        assert_eq!(ip_on_server("10.13.0.248/32", "10.13.0.1/24"), "10.13.0.248");
+    }
+
+    #[test]
+    fn ip_on_server_leaves_the_address_alone_without_a_server_subnet() {
+        assert_eq!(ip_on_server("10.13.0.248", ""), "10.13.0.248");
+        assert_eq!(ip_on_server("10.13.0.248", "garbage"), "10.13.0.248");
+    }
 
     #[test]
     fn same_24_is_in_subnet() {

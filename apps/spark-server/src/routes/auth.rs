@@ -236,6 +236,7 @@ async fn auth_provision(
             device_backup_available: false,
             safe_mode: false,
             node_reports: None,
+            current_node_id: None,
         };
         device_repo::put_device(&st.pool, &new_device).await?;
         device = Some(new_device);

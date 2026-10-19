@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "spark-server"
-version = "0.9.28"
+version = "0.9.29"
 dependencies = [
  "anyhow",
  "argon2",

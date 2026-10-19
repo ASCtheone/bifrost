@@ -193,9 +193,11 @@ pub fn build_device_configs(device: &Device, nodes: &[Node]) -> Vec<BuiltNodeCon
             continue;
         };
 
+        // This spark's address for the device — its subnet, the device's host number.
+        let assigned_ip = wg::ip_on_server(&device.assigned_ip, &server.server_address);
         let wg_config = wg::build_config(&WgConfigParams {
             private_key: &device.private_key,
-            assigned_ip: &device.assigned_ip,
+            assigned_ip: &assigned_ip,
             dns: &device.dns.0,
             server_public_key: &server.public_key,
             preshared_key: &device.preshared_key,
@@ -275,6 +277,7 @@ pub async fn create_device_for_owner(
         device_backup_available: false,
         safe_mode: false,
         node_reports: None,
+        current_node_id: None,
     };
     device_repo::put_device(pool, &device).await?;
     Ok(device)
@@ -291,6 +294,36 @@ mod tests {
             actual_config: Some(SqlxJson(json!({ "servers": servers, "peers": [] }))),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn each_spark_config_uses_an_address_in_that_sparks_subnet() {
+        // One device, two sparks on different subnets: each config must carry an
+        // address the spark's server accepts, with the same host number.
+        let device: Device = serde_json::from_value(json!({
+            "deviceId": "dev-1", "nodeId": "", "name": "router", "type": "router",
+            "status": "provisioned", "provisionMethod": "device-code", "provisionToken": "tok",
+            "assignedIp": "192.168.3.248", "publicKey": "DEVPUB", "privateKey": "PRIV", "presharedKey": "PSK",
+            "serverPublicKey": "", "serverEndpoint": "", "serverPort": 51820,
+            "dns": [], "allowedIps": ["0.0.0.0/0"], "unifiPeerId": null, "enabled": true,
+            "lastSeen": null, "createdBy": "", "ownerEmail": "", "createdAt": "", "updatedAt": "",
+        }))
+        .unwrap();
+        let spark = |id: &str, subnet: &str| Node {
+            node_id: id.into(),
+            adoption_status: "adopted".into(),
+            wan_ip: Some("81.2.3.4".into()),
+            actual_config: Some(SqlxJson(json!({
+                "servers": [{ "id": "s", "name": "VPN", "publicKey": "SRV", "serverPort": 51820, "serverAddress": subnet }],
+                "peers": [],
+            }))),
+            ..Default::default()
+        };
+        let configs = build_device_configs(&device, &[spark("home", "10.13.0.1/24"), spark("apt", "192.168.3.1/24")]);
+        let addr = |id: &str| configs.iter().find(|c| c.node_id == id).unwrap().wg_config.lines()
+            .find(|l| l.starts_with("Address")).unwrap().to_string();
+        assert_eq!(addr("home"), "Address = 10.13.0.248/32");
+        assert_eq!(addr("apt"), "Address = 192.168.3.248/32");
     }
 
     #[test]

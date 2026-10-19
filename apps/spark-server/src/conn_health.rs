@@ -11,7 +11,7 @@
 
 use crate::domain::{Device, Node};
 use crate::routes::shared::{node_endpoint, node_serves_device, spark_server_for};
-use crate::wg::ip_in_server_subnet;
+use crate::wg::ip_on_server;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
@@ -86,13 +86,6 @@ fn ago(secs: i64) -> String {
     }
 }
 
-/// The /24 base of a CIDR or address ("10.13.0.1/24" → "10.13.0").
-fn subnet_base(addr: &str) -> Option<String> {
-    let host = addr.split('/').next()?;
-    let o: Vec<&str> = host.split('.').collect();
-    (o.len() == 4).then(|| format!("{}.{}.{}", o[0], o[1], o[2]))
-}
-
 /// Why an IPv4 endpoint can't be dialled from the internet, if it can't.
 fn non_public_reason(ip: Ipv4Addr) -> Option<&'static str> {
     let o = ip.octets();
@@ -113,6 +106,26 @@ fn router_report(device: &Device, node_id: &str, now: DateTime<Utc>) -> Option<(
     let ok = r.get("ok")?.as_bool()?;
     let at = age_secs(r.get("at")?.as_str()?, now)?;
     Some((ok, at))
+}
+
+/// The name of another client on the spark's owned server that holds `ip`, if any.
+fn ip_taken_by(node: &Node, ip: &str, own_key: &str) -> Option<String> {
+    let peers = node.actual_config.as_ref()?.get("peers")?.as_array()?;
+    peers
+        .iter()
+        .filter(|p| p.get("publicKey").and_then(Value::as_str) != Some(own_key))
+        .find(|p| {
+            p.get("ip")
+                .and_then(Value::as_str)
+                .and_then(|v| v.split('/').next())
+                == Some(ip)
+        })
+        .map(|p| {
+            p.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string()
+        })
 }
 
 /// The device's peer on the spark's owned server, as last reported: its tunnel IP.
@@ -213,21 +226,16 @@ fn node_checks(device: &Device, node: &Node, now: DateTime<Utc>) -> NodeHealth {
         },
     }
 
-    if let Some(s) = server.as_ref().filter(|s| !s.server_address.is_empty()) {
-        if ip_in_server_subnet(&device.assigned_ip, &s.server_address) {
-            checks.push(check(
-                "device_ip",
-                Status::Ok,
-                format!(
-                    "device IP {} is in {}",
-                    device.assigned_ip, s.server_address
-                ),
-            ));
-        } else {
-            checks.push(check("device_ip", Status::Fail, format!(
-                "device IP {} is outside this spark's subnet {} — the controller refuses the client",
-                device.assigned_ip, s.server_address
-            )));
+    // The device's address on this spark: its host number on the spark's subnet.
+    let subnet = server.as_ref().map_or("", |s| s.server_address.as_str());
+    let want_ip = ip_on_server(&device.assigned_ip, subnet);
+    if !subnet.is_empty() {
+        // Another client already holding that address blocks ours from being created.
+        match ip_taken_by(node, &want_ip, &device.public_key) {
+            Some(other) => checks.push(check("device_ip", Status::Fail, format!(
+                "this spark's address for the router, {want_ip}, is already used by client \"{other}\" — UniFi refuses a duplicate"
+            ))),
+            None => checks.push(check("device_ip", Status::Ok, format!("router uses {want_ip} on this spark"))),
         }
     }
 
@@ -240,7 +248,6 @@ fn node_checks(device: &Device, node: &Node, now: DateTime<Utc>) -> NodeHealth {
         )));
     }
 
-    let want_ip = device.assigned_ip.split('/').next().unwrap_or("");
     match reported_peer_ip(node, &device.public_key) {
         None => checks.push(check("peer", Status::Fail, "router is not a client on this spark's WireGuard server (yet) — no handshake is possible")),
         Some(ip) if ip.split('/').next().unwrap_or("") != want_ip => checks.push(check("peer", Status::Warn, format!(
@@ -328,22 +335,6 @@ fn device_checks(device: &Device, nodes: &[&Node], now: DateTime<Utc>) -> Vec<Ch
         ));
     }
 
-    // A device has ONE tunnel IP for every spark. Sparks on different subnets can't
-    // all accept it: each heartbeat re-addresses the device into its own subnet, and
-    // the others then refuse (or drop) the client.
-    let mut subnets: Vec<String> = nodes
-        .iter()
-        .filter_map(|n| spark_server_for(n))
-        .filter_map(|s| subnet_base(&s.server_address).map(|b| format!("{b}.0/24")))
-        .collect();
-    subnets.sort();
-    subnets.dedup();
-    if subnets.len() > 1 {
-        checks.push(check("subnet_conflict", Status::Fail, format!(
-            "sparks use different WireGuard subnets ({}); the device has one IP, so it can only be a valid client on one of them",
-            subnets.join(", ")
-        )));
-    }
     checks
 }
 
@@ -478,20 +469,23 @@ mod tests {
     }
 
     #[test]
-    fn different_subnets_are_flagged_as_a_conflict() {
-        let nodes = [
-            node("home", "primary", "10.13.0.1/24", "81.2.3.4"),
-            node("apt", "secondary", "192.168.3.1/24", "82.5.6.7"),
-        ];
+    fn sparks_on_different_subnets_each_get_their_own_address() {
+        // The real setup: HOME on 10.13.0.0/24, APT on a pre-existing 192.168.3.0/24.
+        let mut apt = node("apt", "secondary", "192.168.3.1/24", "82.5.6.7");
+        apt.actual_config.as_mut().unwrap().0["peers"] =
+            json!([{ "id": "p2", "publicKey": "DEVPUB", "ip": "192.168.3.42" }]);
+        let nodes = [node("home", "primary", "10.13.0.1/24", "81.2.3.4"), apt];
         let h = device_health(&device(), &nodes, now());
-        assert!(
-            h.checks
-                .iter()
-                .any(|c| c.id == "subnet_conflict" && c.status == Status::Fail),
-            "{h:#?}"
-        );
-        let apt = h.nodes.iter().find(|n| n.node_id == "apt").unwrap();
-        assert_eq!(status_of(apt, "device_ip"), Some(Status::Fail));
+        assert_eq!(h.status, Status::Ok, "{h:#?}");
+        assert_eq!(h.healthy_nodes, 2);
+    }
+
+    #[test]
+    fn address_taken_by_another_client_fails() {
+        let mut n = node("home", "primary", "10.13.0.1/24", "81.2.3.4");
+        n.actual_config.as_mut().unwrap().0["peers"] = json!([{ "id": "px", "name": "Miguel Router", "publicKey": "OTHER", "ip": "10.13.0.42" }]);
+        let h = device_health(&device(), &[n], now());
+        assert_eq!(status_of(&h.nodes[0], "device_ip"), Some(Status::Fail));
     }
 
     #[test]

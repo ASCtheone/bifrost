@@ -31,6 +31,15 @@ interface DeviceRow {
   readonly backupAvailable?: boolean;
   readonly pendingAction?: string | null;
   readonly safeMode?: boolean;
+  // The spark the router's tunnel is on, as of its last poll (null = down/unknown).
+  readonly currentNode?: CurrentNode | null;
+}
+
+interface CurrentNode {
+  readonly nodeId: string;
+  readonly name: string;
+  readonly location: string | null;
+  readonly role: string | null;
 }
 
 interface DevicesResponse {
@@ -213,6 +222,14 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
               @if (device.clientVersion) { <span class="device-version">v{{ device.clientVersion }}</span> }
               @if (device.safeMode) { <span class="device-safe-pill" title="Unlock override: tunnel down, only the control plane + GitHub reachable">Safe mode</span> }
             </div>
+            @if (device.currentNode; as cn) {
+              <div class="device-via" [title]="'Tunnel is up on ' + cn.name + ' (as of the last router check-in)'">
+                <span class="via-dot"></span>
+                via <strong>{{ cn.name }}</strong>
+                @if (cn.location) { <span class="via-loc">· {{ cn.location }}</span> }
+                @if (cn.role === 'primary') { <span class="via-role">primary</span> }
+              </div>
+            }
             @if (device.clientVersion) {
               <div class="device-update">
                 @if (updatingDevice()[device.id]; as stage) {
@@ -331,6 +348,11 @@ const DEVICE_ICONS: Record<DeviceType, string> = {
     .device-ip { display: inline-block; padding: 2px 8px; border-radius: 6px; background: var(--bg-input); font-size: 0.75rem; font-family: monospace; color: var(--text-secondary); margin-bottom: 0.25rem; }
     .device-meta { display: flex; align-items: center; gap: 0.4rem; }
     .device-type { font-size: 0.65rem; color: var(--text-disabled); text-transform: uppercase; letter-spacing: 0.3px; font-weight: 500; }
+    .device-via { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.35rem; font-size: 0.72rem; color: var(--text-secondary); }
+    .device-via strong { color: var(--text-primary); font-weight: 600; }
+    .via-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .via-loc { color: var(--text-tertiary); }
+    .via-role { font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; color: var(--text-disabled); }
     .device-version { font-size: 0.6rem; color: var(--text-disabled); font-family: ui-monospace, monospace; }
     .device-update { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.4rem; }
     .device-update-btn { padding: 2px 9px; border-radius: 8px; border: none; background: var(--accent); color: #fff; font-size: 0.6rem; font-weight: 600; cursor: pointer; }

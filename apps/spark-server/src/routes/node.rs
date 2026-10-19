@@ -35,6 +35,8 @@ async fn desired_config(
         .await?
         .ok_or_else(|| AppError::NotFound("node not found".into()))?;
     let owner = node.owner_email.as_str();
+    // Each device's address on THIS spark's server (see wg::ip_on_server).
+    let subnet = reported_server_subnet(&node).unwrap_or_default();
 
     let peers: Vec<Value> = device_repo::query_all_devices(&st.pool)
         .await?
@@ -43,11 +45,11 @@ async fn desired_config(
         .filter(|d| owner.is_empty() || d.owner_email == owner)
         .filter(|d| !d.public_key.is_empty())
         .map(|d| {
-            let ip = d.assigned_ip.split('/').next().unwrap_or(&d.assigned_ip).to_string();
+            let ip = crate::wg::ip_on_server(&d.assigned_ip, &subnet);
             json!({
                 "name": d.name,
                 "publicKey": d.public_key,
-                "assignedIp": d.assigned_ip,
+                "assignedIp": ip,
                 "presharedKey": d.preshared_key,
                 // On the server side a peer's allowed-ips is just its tunnel IP.
                 "allowedIps": [format!("{ip}/32")],
@@ -193,22 +195,12 @@ async fn heartbeat(
         }
     }
 
-    // Re-address any device whose IP predates our knowing this spark's subnet.
-    //
-    // wg::assign_ip derives a device's address from the WireGuard server's subnet, but
-    // falls back to a hardcoded 192.168.8.1/24 when the server isn't known yet — which
-    // is the case for any device created before the spark first heartbeated. UniFi then
-    // refuses the peer outright (api.err.UserIpDoesNotBelongToNetwork) and the device
-    // can never connect, with nothing in the UI to say why.
-    //
-    // The heartbeat is the moment we learn the real subnet, so it is the moment to fix
-    // it. The allocation is deterministic in the device id, so a device keeps its host
-    // octet and is simply rebased onto the right network — the same device always lands
-    // on the same address.
+    // No device re-addressing here any more. It used to rebase each device's single
+    // stored IP onto the heartbeating spark's subnet — with two sparks on different
+    // subnets they took turns overwriting it, so each always asked UniFi for an address
+    // in the OTHER spark's subnet, got refused, and no router ever became a client. A
+    // device's address is now derived per spark instead (wg::ip_on_server).
     if let Some(node) = node_repo::get_node(&st.pool, &node_id).await? {
-        if let Some(subnet) = reported_server_subnet(&node) {
-            repair_device_ips(&st, &node, &subnet).await?;
-        }
         reconcile_device_provisioning(&st, &node).await?;
     }
 
@@ -279,7 +271,7 @@ async fn reconcile_device_provisioning(st: &AppState, node: &crate::domain::Node
 ///
 /// Prefer the named server (spark_vpn_name) when it's set, but fall back to the single
 /// reported server otherwise — the name is only populated when a VPN was created via
-/// the dashboard, and the IP repair must not wait on that. Returns None if there isn't
+/// the dashboard, and device addresses must not wait on that. Returns None if there isn't
 /// exactly one unambiguous server address to key off.
 fn reported_server_subnet(node: &crate::domain::Node) -> Option<String> {
     if let Some(s) = crate::routes::shared::spark_server_for(node) {
@@ -296,35 +288,6 @@ fn reported_server_subnet(node: &crate::domain::Node) -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from)
-}
-
-async fn repair_device_ips(
-    st: &AppState,
-    node: &crate::domain::Node,
-    server_address: &str,
-) -> AppResult<()> {
-    let owner = node.owner_email.as_str();
-    for d in device_repo::query_all_devices(&st.pool).await? {
-        if d.status == "revoked" {
-            continue;
-        }
-        if !owner.is_empty() && !d.owner_email.is_empty() && d.owner_email != owner {
-            continue;
-        }
-        if crate::wg::ip_in_server_subnet(&d.assigned_ip, server_address) {
-            continue;
-        }
-        let fixed = crate::wg::assign_ip(&d.device_id, Some(server_address));
-        tracing::info!(
-            device = %d.device_id,
-            from = %d.assigned_ip,
-            to = %fixed,
-            subnet = %server_address,
-            "device address was outside the spark's WireGuard subnet — re-addressed"
-        );
-        device_repo::update_device_ip(&st.pool, &d.device_id, &fixed).await?;
-    }
-    Ok(())
 }
 
 /// GET /nodes/:nodeId/self  (node-key auth)

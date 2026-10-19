@@ -158,22 +158,6 @@ pub async fn reset_for_resync(pool: &SqlitePool, device_id: &str) -> AppResult<(
     Ok(())
 }
 
-/// Re-address a device. Used when its IP was allocated before the spark's WireGuard
-/// subnet was known, so it landed outside it and the controller refuses the peer.
-pub async fn update_device_ip(
-    pool: &SqlitePool,
-    device_id: &str,
-    assigned_ip: &str,
-) -> AppResult<()> {
-    sqlx::query("UPDATE devices SET assigned_ip = ?, updated_at = ? WHERE device_id = ?")
-        .bind(assigned_ip)
-        .bind(now_iso())
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Store the router's per-spark handshake results (see conn_health). Reports are
 /// merged per node, so a spark the router didn't try this round keeps its last result.
 pub async fn merge_node_reports(
@@ -186,6 +170,16 @@ pub async fn merge_node_reports(
     merged.extend(reports.iter().map(|(k, v)| (k.clone(), v.clone())));
     sqlx::query("UPDATE devices SET node_reports = ? WHERE device_id = ?")
         .bind(sqlx::types::Json(serde_json::Value::Object(merged)))
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Record which spark the router's tunnel is on (None while it's down).
+pub async fn set_current_node(pool: &SqlitePool, device_id: &str, node_id: Option<&str>) -> AppResult<()> {
+    sqlx::query("UPDATE devices SET current_node_id = ? WHERE device_id = ?")
+        .bind(node_id)
         .bind(device_id)
         .execute(pool)
         .await?;

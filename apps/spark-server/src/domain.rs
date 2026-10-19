@@ -165,6 +165,9 @@ pub struct Device {
     /// self-reported each poll (X-Bifrost-Nodes). Feeds the connection health check.
     #[serde(default)]
     pub node_reports: Option<Json<serde_json::Value>>,
+    /// The spark the router's tunnel is up on, as of its last poll (None = down/unknown).
+    #[serde(default)]
+    pub current_node_id: Option<String>,
 }
 
 // ── Peer (WireGuard peer) ────────────────────────────────────────

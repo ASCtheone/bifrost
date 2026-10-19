@@ -161,7 +161,8 @@
     // The top window is the single source of status — no separate message line.
     if (data.state === 'up') {
       dot.style.background = 'var(--success)';
-      t.textContent = 'Connected — last handshake ' + (data.handshakeAge || '?') + 's ago';
+      var where = currentNodeLabel(data);
+      t.textContent = 'Connected' + (where ? ' via ' + where : '') + ' — last handshake ' + (data.handshakeAge || '?') + 's ago';
     } else if (data.registered && data.enabled) {
       dot.style.background = 'var(--warning)';
       t.textContent = 'Connecting…';
@@ -223,6 +224,16 @@
     } else {
       b.textContent = 'Connect'; b.className = 'primary'; b.dataset.act = 'connect';
     }
+  }
+
+  // "HOME — Paris, France (primary)" for the spark the tunnel is on, or ''.
+  function currentNodeLabel(data) {
+    var n = (data.nodes || []).filter(function (x) { return x.nodeId === data.currentNode; })[0];
+    if (!n) return '';
+    var label = n.name || n.nodeId;
+    if (n.location) label += ' — ' + n.location;
+    if (n.role === 'primary') label += ' (primary)';
+    return label;
   }
 
   function buildLocations(data) {

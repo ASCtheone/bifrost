@@ -30,8 +30,32 @@ pub fn routes() -> Router<AppState> {
 
 // ── GET /devices ────────────────────────────────────────────────
 
+/// `{nodeId, name, location, role}` of the spark a router reports being on, or null —
+/// also null once the router has gone quiet, since the report is then out of date.
+fn current_node_json(d: &Device, nodes: &[crate::domain::Node]) -> Value {
+    const STALE_SECS: i64 = 900; // three missed 5-minute polls
+    let fresh = d
+        .last_seen
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .is_some_and(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() <= STALE_SECS);
+    let Some(id) = d.current_node_id.as_deref().filter(|_| fresh) else {
+        return Value::Null;
+    };
+    match nodes.iter().find(|n| n.node_id == id) {
+        Some(n) => json!({
+            "nodeId": n.node_id,
+            "name": if n.node_name.is_empty() { &n.node_id } else { &n.node_name },
+            "location": shared::node_location(n),
+            "role": n.role,
+        }),
+        None => json!({ "nodeId": id, "name": id, "location": null, "role": null }),
+    }
+}
+
 async fn list_devices(State(st): State<AppState>, AdminAuth(auth): AdminAuth) -> AppResult<Json<Value>> {
     let devices = device_repo::query_all_devices(&st.pool).await?;
+    let nodes = node_repo::query_all_nodes(&st.pool).await?;
     let is_super = auth.is_superadmin();
     let latest = st.latest_version.read().map(|g| g.clone()).unwrap_or_default();
     let list: Vec<Value> = devices
@@ -59,6 +83,7 @@ async fn list_devices(State(st): State<AppState>, AdminAuth(auth): AdminAuth) ->
                 "backupAvailable": d.device_backup_available,
                 "pendingAction": d.pending_action,
                 "safeMode": d.safe_mode,
+                "currentNode": current_node_json(&d, &nodes),
             })
         })
         .collect();
@@ -145,6 +170,7 @@ async fn create_device(
         device_backup_available: false,
         safe_mode: false,
         node_reports: None,
+        current_node_id: None,
     };
     device_repo::put_device(&st.pool, &device).await?;
 
@@ -426,4 +452,41 @@ fn forwarded_ip(headers: &HeaderMap) -> Option<String> {
         .and_then(|s| s.split(',').next())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::Node;
+
+    fn device(current: Option<&str>, last_seen_secs_ago: i64) -> Device {
+        let seen = (chrono::Utc::now() - chrono::Duration::seconds(last_seen_secs_ago)).to_rfc3339();
+        serde_json::from_value(json!({
+            "deviceId": "dev-1", "nodeId": "", "name": "router", "type": "router",
+            "status": "active", "provisionMethod": "device-code", "provisionToken": "tok",
+            "assignedIp": "10.13.0.42", "publicKey": "DEVPUB", "privateKey": "x", "presharedKey": "y",
+            "serverPublicKey": "", "serverEndpoint": "", "serverPort": 51820,
+            "dns": [], "allowedIps": [], "unifiPeerId": null, "enabled": true,
+            "lastSeen": seen, "createdBy": "", "ownerEmail": "",
+            "createdAt": "", "updatedAt": "", "currentNodeId": current,
+        }))
+        .unwrap()
+    }
+
+    fn nodes() -> Vec<Node> {
+        vec![Node { node_id: "home".into(), node_name: "HOME".into(), role: "primary".into(), ..Default::default() }]
+    }
+
+    #[test]
+    fn names_the_spark_the_router_is_on() {
+        let v = current_node_json(&device(Some("home"), 30), &nodes());
+        assert_eq!(v["name"], "HOME");
+        assert_eq!(v["role"], "primary");
+    }
+
+    #[test]
+    fn null_when_down_or_when_the_report_is_stale() {
+        assert!(current_node_json(&device(None, 30), &nodes()).is_null());
+        assert!(current_node_json(&device(Some("home"), 3600), &nodes()).is_null());
+    }
 }

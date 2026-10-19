@@ -31,7 +31,7 @@ RX_STALL_MAX=35                             # no bytes in for this long → conf
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
-BIFROST_VERSION=0.9.28
+BIFROST_VERSION=0.9.29
 # Self-update: a persistent backup + pending marker (STATE_DIR=/tmp is volatile).
 UPDATE_DIR="${BIFROST_UPDATE_DIR:-/etc/bifrost}"
 BAK="$UPDATE_DIR/bifrost.bak"
@@ -116,6 +116,7 @@ fetch_config() {
 		-H "X-Bifrost-Backup: $backup" \
 		-H "X-Bifrost-Safemode: $([ "$(cfg_get safe_mode)" = 1 ] && echo 1 || echo 0)" \
 		-H "X-Bifrost-Nodes: $(node_reports_header)" \
+		-H "X-Bifrost-Current: $(current_node_header)" \
 		"$(api)/provision/$token" -o "$RESP.new" 2>/dev/null; then
 		rm -f "$RESP.new"
 		log "could not reach master at $(api)"
@@ -446,6 +447,23 @@ node_reports_header() {
 		}' "$NODES_REPORT"
 }
 
+# The spark the tunnel is up on right now, for X-Bifrost-Current — empty when down,
+# so the dashboard never shows a location we've already left.
+current_node_header() {
+	[ "$(cfg_get safe_mode)" = 1 ] && return 0
+	[ "$(handshake_age)" != none ] || return 0
+	cat "$CURNODE" 2>/dev/null
+}
+
+# "HOME (primary) — Paris, France", or "none".
+current_node_label() {
+	local id; id=$(current_node_header)
+	[ -n "$id" ] && [ -s "$RESP" ] || { echo none; return; }
+	jq -r --arg id "$id" '.nodes[] | select(.nodeId == $id)
+		| (.name // .nodeId) + (if .role then " (" + .role + ")" else "" end)
+		+ (if (.location // "") != "" then " — " + .location else "" end)' "$RESP" 2>/dev/null | head -n1
+}
+
 # ── node ordering (location: auto|<nodeId>) ─────────────────────
 
 node_order() {
@@ -526,7 +544,8 @@ connect() {
 	# black-holes the router's own traffic — including the master. Drop it first so
 	# the config fetch and the endpoints go out over the WAN. (The kill switch keeps
 	# guarding the LAN meanwhile.)
-	local was_healthy=0
+	local was_healthy=0 before
+	before=$(cat "$CURNODE" 2>/dev/null)
 	if healthy; then
 		was_healthy=1
 	elif uci -q get "network.$(ifname)" >/dev/null 2>&1; then
@@ -551,6 +570,8 @@ connect() {
 		[ "$idx" = "$cur" ] && continue   # just tried it
 		may_connect || return 1
 		if bring_up "$idx"; then
+			# Moved to another spark: tell the master now, not at the next refresh.
+			[ "$(cat "$CURNODE" 2>/dev/null)" != "$before" ] && fetch_config >/dev/null 2>&1
 			return 0
 		fi
 		log "node $(jq -r ".nodes[$idx].nodeId" "$RESP") did not come up, trying next"
@@ -654,6 +675,7 @@ maybe_return_primary() {
 	if bring_up "$primary_idx"; then
 		rm -f "$PRIMARY_BACKOFF"
 		log "returned to primary node"
+		fetch_config >/dev/null 2>&1   # tell the master where we are now
 		return 0
 	fi
 	primary_backoff "$fails" "$now"
@@ -697,6 +719,7 @@ cmd_status() {
 	echo "  master:      $(master)"
 	echo "  registered:  $([ -n "$(cfg_get provision_token)" ] && echo yes || echo "no (code: $(cfg_get device_code))")"
 	echo "  location:    $(cfg_get location)"
+	echo "  connected to: $(current_node_label)"
 	echo "  kill switch: $([ "$(cfg_get killswitch)" = 1 ] && echo on || echo off)"
 	echo "  safe mode:   $([ "$(cfg_get safe_mode)" = 1 ] && echo "ON (unlock override — tunnel down, control plane + GitHub only)" || echo off)"
 	echo "  route LAN:   $([ "$(cfg_get route_lan)" = 1 ] && echo yes || echo no)"

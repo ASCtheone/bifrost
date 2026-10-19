@@ -126,7 +126,13 @@ EOF
 	cat >"$T/bin/curl" <<'EOF'
 #!/bin/sh
 out=""
-while [ $# -gt 0 ]; do [ "$1" = "-o" ] && { out=$2; shift; }; shift; done
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-o) out=$2; shift ;;
+		-H) echo "$2" >>"$T/curl_headers"; shift ;;
+	esac
+	shift
+done
 if grep -q "^network.bifrost=" "$T/uci"; then
 	host=$(grep -m1 "^network\.cfgwireguard_bifrost\.endpoint_host=" "$T/uci" | cut -d= -f2-)
 	grep -qx "$host" "$T/up_hosts" || exit 7   # black-holed by the dead tunnel's default route

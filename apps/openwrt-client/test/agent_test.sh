@@ -395,6 +395,33 @@ test_check_reports_each_spark() {
 	check "non-zero exit when a spark fails" not cmd_check >/dev/null
 }
 
+# Which spark are we on? `bifrost status` names it, and the master is told.
+test_current_location_is_shown_and_reported() {
+	answers "$APT_IP"
+	connect || return 1
+	check "status names the spark" expr "$(cmd_status)" : '.*connected to: APT (secondary)' >/dev/null &&
+	check "reported to the master" [ "$(current_node_header)" = node-apt ]
+}
+
+# Down (or in safe mode) → report nothing, not the last node we were on.
+test_no_current_location_when_down() {
+	answers "$APT_IP"
+	connect || return 1
+	teardown
+	check "nothing reported when down" [ -z "$(current_node_header)" ] &&
+	check "status says not connected" expr "$(cmd_status)" : '.*connected to: none' >/dev/null
+}
+
+# A failover tells the master right away, not at the next 5-minute refresh.
+test_switching_node_reports_immediately() {
+	answers "$APT_IP"
+	connect || return 1
+	: >"$T/curl_headers"
+	answers "$HOME_IP"; teardown
+	connect || return 1
+	check "master told about HOME after the switch" grep -q 'X-Bifrost-Current: node-home' "$T/curl_headers"
+}
+
 # Test helper: configure a tunnel to <ip> directly (simulates a leftover dead tunnel).
 apply_wg_node_ip() {
 	mkdir -p "$STATE_DIR"
@@ -434,7 +461,10 @@ for t in \
 	test_handshake_results_are_recorded_per_node \
 	test_probe_result_replaces_earlier_report \
 	test_node_report_header_format \
-	test_check_reports_each_spark
+	test_check_reports_each_spark \
+	test_current_location_is_shown_and_reported \
+	test_no_current_location_when_down \
+	test_switching_node_reports_immediately
 do
 	run "$t"
 done
