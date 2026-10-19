@@ -15,18 +15,25 @@
 set -u
 
 CONFIG=bifrost
-STATE_DIR=/tmp/bifrost
+STATE_DIR="${BIFROST_STATE_DIR:-/tmp/bifrost}"   # overridable for tests only
 RESP="$STATE_DIR/provision.json"
 WGTMP="$STATE_DIR/wg.conf"
 HASHFILE="$STATE_DIR/applied.hash"
 CURNODE="$STATE_DIR/current.node"
+APPLIED="$STATE_DIR/applied.conf"          # last config that actually handshook
+PRIMARY_BACKOFF="$STATE_DIR/primary.backoff" # "<next attempt epoch> <failures> <primary nodeId>"
+PRIMARY_BACKOFF_MAX=3600
+NODES_REPORT="$STATE_DIR/nodes.report"      # "<nodeId> ok|fail <epoch>" — last handshake result per spark
+RXSTATE="$STATE_DIR/rx.last"                # "<rx bytes> <epoch they last changed>"
+SAFE_RECOVER_TICKS=12                       # watchdog safe mode re-probes nodes every 12 ticks (~60 s)
+RX_STALL_MAX=35                             # no bytes in for this long → confirm with a ping
 # Hard-bound control plane. Override only for self-hosting via
 # `uci set bifrost.settings.master_url=...`.
 MASTER_DEFAULT="https://dash.asc.ninja/bifrost"
 KS_CHAIN=bifrost_ks
 BIFROST_VERSION=0.9.27
 # Self-update: a persistent backup + pending marker (STATE_DIR=/tmp is volatile).
-UPDATE_DIR=/etc/bifrost
+UPDATE_DIR="${BIFROST_UPDATE_DIR:-/etc/bifrost}"
 BAK="$UPDATE_DIR/bifrost.bak"
 PENDING="$UPDATE_DIR/.update-pending"
 
@@ -108,11 +115,16 @@ fetch_config() {
 		-H "X-Bifrost-Version: $BIFROST_VERSION" \
 		-H "X-Bifrost-Backup: $backup" \
 		-H "X-Bifrost-Safemode: $([ "$(cfg_get safe_mode)" = 1 ] && echo 1 || echo 0)" \
-		"$(api)/provision/$token" -o "$RESP" 2>/dev/null; then
+		-H "X-Bifrost-Nodes: $(node_reports_header)" \
+		"$(api)/provision/$token" -o "$RESP.new" 2>/dev/null; then
+		rm -f "$RESP.new"
 		log "could not reach master at $(api)"
 		return 1
 	fi
-	jq -e '.nodes' "$RESP" >/dev/null 2>&1 || { log "unexpected provision response"; return 1; }
+	# Only replace the cached provision with a complete, valid one — connect() falls
+	# back to the cache when the master is unreachable.
+	jq -e '.nodes' "$RESP.new" >/dev/null 2>&1 || { rm -f "$RESP.new"; log "unexpected provision response"; return 1; }
+	mv "$RESP.new" "$RESP"
 	handle_pending_action
 	return 0
 }
@@ -237,18 +249,22 @@ killswitch_on() {
 	local br iface
 	br=$(lan_dev); iface=$(ifname)
 	command -v iptables >/dev/null 2>&1 || { log "iptables not found; kill switch unavailable"; return 1; }
-	iptables -N "$KS_CHAIN" 2>/dev/null
+	# Re-applied every tick; only log when it actually becomes engaged.
+	local new=0
+	iptables -N "$KS_CHAIN" 2>/dev/null && new=1
 	iptables -F "$KS_CHAIN"
 	iptables -A "$KS_CHAIN" -o "$iface" -j RETURN   # allow: out through the tunnel
 	iptables -A "$KS_CHAIN" -o "$br" -j RETURN      # allow: back into the LAN
 	iptables -A "$KS_CHAIN" -j DROP                 # block: everything else (WAN)
 	iptables -C FORWARD -i "$br" -j "$KS_CHAIN" 2>/dev/null \
 		|| iptables -I FORWARD -i "$br" -j "$KS_CHAIN"
-	log "kill switch engaged"
+	[ "$new" = 1 ] && log "kill switch engaged"
+	return 0
 }
 
 killswitch_off() {
 	command -v iptables >/dev/null 2>&1 || return 0
+	iptables -nL "$KS_CHAIN" >/dev/null 2>&1 || return 0   # not engaged — nothing to do
 	iptables -D FORWARD -i "$(lan_dev)" -j "$KS_CHAIN" 2>/dev/null
 	iptables -F "$KS_CHAIN" 2>/dev/null
 	iptables -X "$KS_CHAIN" 2>/dev/null
@@ -312,8 +328,11 @@ safe_fw_clear() {
 	iptables -X "$SAFE_CHAIN" 2>/dev/null
 }
 
+# safe_on [reason] — "manual" (the default: router UI, dashboard, CLI) stays until
+# someone resumes; "watchdog" is lifted by safe_recover as soon as a node answers.
 safe_on() {
 	cfg_set safe_mode 1
+	cfg_set safe_reason "${1:-manual}"
 	killswitch_off            # the tunnel kill switch is replaced by the safe whitelist
 	teardown                  # drop the tunnel → the router's WAN default route returns
 	safe_fw_build
@@ -322,27 +341,109 @@ safe_on() {
 
 safe_off() {
 	cfg_set safe_mode 0
+	cfg_set safe_reason ""
 	safe_fw_clear
 	log "safe mode released — resuming normal operation"
 }
 
+# Watchdog safe mode only: re-fetch the config (a spark that failed may have a new
+# endpoint or keys by now) and side-probe every node over the plain WAN. The first
+# one that answers releases safe mode, and the normal loop reconnects primary-first.
+safe_recover() {
+	[ "$(cfg_get safe_reason)" = watchdog ] || return 1
+	fetch_config >/dev/null 2>&1 || [ -s "$RESP" ] || return 1
+	[ "$(cfg_get safe_mode)" = 1 ] || return 0   # a pushed `resume` already lifted it
+	local idx
+	for idx in $(node_order); do
+		if probe_node "$idx"; then
+			log "node $(jq -r ".nodes[$idx].name // .nodes[$idx].nodeId" "$RESP") answers again — leaving safe mode"
+			safe_off
+			return 0
+		fi
+	done
+	return 1
+}
+
 # ── tunnel health ───────────────────────────────────────────────
 
+# handshake_age [peer public key] — seconds since the last handshake, or "none".
+# With a key, only that peer counts: right after ifup netifd may not have swapped
+# the new peer in yet, and the old peer's handshake would look like success.
 handshake_age() {
 	local hs now
-	hs=$(wg show "$(ifname)" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+	if [ -n "${1:-}" ]; then
+		hs=$(wg show "$(ifname)" latest-handshakes 2>/dev/null | awk -v k="$1" '$1 == k {print $2}')
+	else
+		hs=$(wg show "$(ifname)" latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+	fi
 	[ -n "$hs" ] && [ "$hs" != "0" ] || { echo none; return; }
 	now=$(date +%s)
 	echo $((now - hs))
 }
-healthy() { local a; a=$(handshake_age); [ "$a" != none ] && [ "$a" -lt 180 ]; }
-wait_handshake() {
+# Healthy = a recent handshake AND bytes still arriving. The handshake alone is slow
+# to go stale (up to 180 s after the peer vanishes). Received bytes aren't — but an
+# idle tunnel receives nothing either (a peer doesn't answer keepalives), so after
+# RX_STALL_MAX seconds without a byte in we send real data through the tunnel: a
+# live peer always answers data, with the reply or, if that's dropped upstream,
+# with its passive keepalive ~10 s later.
+healthy() {
+	local a rx last since now
+	a=$(handshake_age); [ "$a" != none ] && [ "$a" -lt 180 ] || return 1
+	rx=$(wg show "$(ifname)" transfer 2>/dev/null | awk 'NR==1{print $2}')
+	[ -n "$rx" ] || return 0   # can't tell — trust the handshake
+	now=$(date +%s)
+	last=""; since=$now
+	[ -f "$RXSTATE" ] && read -r last since <"$RXSTATE"
+	case "${last:-x}${since:-x}" in *[!0-9]*) last=""; since=$now ;; esac
+	if [ "$rx" != "$last" ]; then
+		echo "$rx $now" >"$RXSTATE"
+		return 0
+	fi
+	[ $((now - since)) -lt "$RX_STALL_MAX" ] && return 0
+	# Stalled — but an idle tunnel looks the same (the peer answers keepalives with
+	# silence). Send real data through it: a live peer always answers that.
+	local t=0
+	ping -c 2 -W 2 -I "$(ifname)" "$(probe_ip)" >/dev/null 2>&1
+	while :; do
+		rx=$(wg show "$(ifname)" transfer 2>/dev/null | awk 'NR==1{print $2}')
+		if [ -n "$rx" ] && [ "$rx" != "$last" ]; then
+			echo "$rx $(date +%s)" >"$RXSTATE"
+			return 0
+		fi
+		[ "$t" -ge 12 ] && return 1
+		sleep 1; t=$((t + 1))
+	done
+}
+# Where the liveness ping goes (through the tunnel). Any reliably-routed host works.
+probe_ip() { local p; p=$(cfg_get probe_ip); echo "${p:-1.1.1.1}"; }
+wait_handshake() {  # wait_handshake <seconds> [peer public key]
 	local t=0
 	while [ "$t" -lt "$1" ]; do
-		[ "$(handshake_age)" != none ] && return 0
+		[ "$(handshake_age "${2:-}")" != none ] && return 0
 		sleep 2; t=$((t + 2))
 	done
 	return 1
+}
+
+# ── per-spark handshake results (for the dashboard's health check) ─
+
+# node_report <node index> ok|fail — remember whether this spark last handshook.
+node_report() {
+	local id; id=$(jq -r ".nodes[$1].nodeId // empty" "$RESP" 2>/dev/null)
+	[ -n "$id" ] || return 0
+	{ grep -v "^$id " "$NODES_REPORT" 2>/dev/null; echo "$id $2 $(date +%s)"; } >"$NODES_REPORT.t"
+	mv "$NODES_REPORT.t" "$NODES_REPORT"
+}
+
+# "id=ok:<age s>,id=fail:<age s>" for X-Bifrost-Nodes. Ages, not timestamps: the
+# router has no RTC, so the master anchors them to its own clock.
+node_reports_header() {
+	[ -s "$NODES_REPORT" ] || return 0
+	awk -v now="$(date +%s)" '
+		$2 ~ /^(ok|fail)$/ && $3 ~ /^[0-9]+$/ {
+			age = now - $3; if (age < 0) age = 0
+			printf "%s%s=%s:%d", (n++ ? "," : ""), $1, $2, age
+		}' "$NODES_REPORT"
 }
 
 # ── node ordering (location: auto|<nodeId>) ─────────────────────
@@ -350,8 +451,17 @@ wait_handshake() {
 node_order() {
 	local loc; loc=$(cfg_get location); [ -n "$loc" ] || loc=auto
 	if [ "$loc" = "auto" ]; then
-		# primary first, then the rest — this is what enables return-to-primary.
-		jq -r '.nodes | to_entries | sort_by(.value.role != "primary") | .[].key' "$RESP"
+		# primary first, then the rest — this is what enables return-to-primary —
+		# unless the primary is known dead right now (in back-off): then it goes last,
+		# so failover doesn't spend ~15 s on it first.
+		local order first
+		order=$(jq -r '.nodes | to_entries | sort_by(.value.role != "primary") | .[].key' "$RESP")
+		if primary_backed_off; then
+			first=$(echo "$order" | head -n1)
+			order="$(echo "$order" | sed 1d)
+$first"
+		fi
+		echo "$order"
 	else
 		jq -r --arg id "$loc" '.nodes | to_entries | map(select(.value.nodeId == $id)) | .[].key' "$RESP"
 	fi
@@ -364,16 +474,46 @@ bring_up() {  # bring_up <node index> ; returns 0 if the tunnel handshakes
 	printf '%s\n' "$conf" >"$WGTMP"
 	hash=$(sha "$WGTMP")
 	if [ "$hash" = "$(cat "$HASHFILE" 2>/dev/null)" ] && healthy; then
+		node_report "$idx" ok
 		return 0   # already on this exact config and healthy
 	fi
 	apply_wg "$WGTMP" || return 1
 	ifup "$(ifname)" >/dev/null 2>&1
-	if wait_handshake 15; then
+	if wait_handshake 15 "$(wg_field "$WGTMP" PublicKey)"; then
 		echo "$hash" >"$HASHFILE"
+		cp "$WGTMP" "$APPLIED"
 		jq -r ".nodes[$idx].nodeId // empty" "$RESP" >"$CURNODE"
+		node_report "$idx" ok
 		log "connected via $(jq -r ".nodes[$idx].name // .nodes[$idx].nodeId" "$RESP")"
 		return 0
 	fi
+	node_report "$idx" fail
+	return 1
+}
+
+# Re-apply the last config that handshook (after a failed switch attempt).
+restore_previous() {
+	[ -s "$APPLIED" ] || return 1
+	apply_wg "$APPLIED" || return 1
+	ifup "$(ifname)" >/dev/null 2>&1
+	wait_handshake 15 "$(wg_field "$APPLIED" PublicKey)"
+}
+
+# Whether the agent should be bringing a tunnel up at all right now. Re-checked
+# during connect(): the web UI can disable it, or a pushed `unlock` can enter safe
+# mode, while a connect is in progress.
+may_connect() {
+	[ "$(cfg_get enabled)" = 1 ] && [ "$(cfg_get safe_mode)" != 1 ]
+}
+
+# Index (in $RESP) of the node we're currently on, if it's one of the given indices.
+current_idx() {  # current_idx "<space-separated candidate indices>"
+	local cur idx
+	cur=$(cat "$CURNODE" 2>/dev/null)
+	[ -n "$cur" ] || return 1
+	for idx in $1; do
+		[ "$(jq -r ".nodes[$idx].nodeId // empty" "$RESP")" = "$cur" ] && { echo "$idx"; return 0; }
+	done
 	return 1
 }
 
@@ -381,42 +521,170 @@ bring_up() {  # bring_up <node index> ; returns 0 if the tunnel handshakes
 
 connect() {
 	apply_killswitch          # engage before touching the tunnel, so no leak while switching
-	fetch_config || return 1
-	local order idx
+	clean_probe
+	# A configured tunnel that isn't handshaking still owns the 0.0.0.0/0 route, which
+	# black-holes the router's own traffic — including the master. Drop it first so
+	# the config fetch and the endpoints go out over the WAN. (The kill switch keeps
+	# guarding the LAN meanwhile.)
+	local was_healthy=0
+	if healthy; then
+		was_healthy=1
+	elif uci -q get "network.$(ifname)" >/dev/null 2>&1; then
+		teardown
+	fi
+	if ! fetch_config; then
+		[ -s "$RESP" ] || return 1
+		log "master unreachable — using the last known config"
+	fi
+	may_connect || return 1
+	local order idx cur=""
 	order=$(node_order)
 	[ -n "$order" ] || { log "no usable node for the selected location"; return 1; }
+	# Healthy refresh: stay on the current node (re-applied only if its config
+	# changed). Moving back to the primary is maybe_return_primary's job.
+	if [ "$was_healthy" = 1 ] && cur=$(current_idx "$order"); then
+		bring_up "$cur" && return 0
+	else
+		cur=""
+	fi
 	for idx in $order; do
+		[ "$idx" = "$cur" ] && continue   # just tried it
+		may_connect || return 1
 		if bring_up "$idx"; then
 			return 0
 		fi
 		log "node $(jq -r ".nodes[$idx].nodeId" "$RESP") did not come up, trying next"
 	done
 	log "could not establish a tunnel to any node"
+	teardown   # no dead tunnel left black-holing the WAN
 	return 1
 }
 
-# On "auto", if we're healthy but not on the primary, try the primary again so we
-# return to it once it's back. Only disrupt when the primary actually comes up.
+# Can we handshake with a node WITHOUT touching the live tunnel? Uses a throwaway
+# WireGuard device with the same device key; nothing is routed into it, so LAN
+# traffic keeps flowing over the current tunnel while we find out. (Its handshake
+# packets go out via the normal routing table — through the live tunnel if one is
+# up, which is fine: we only need to know the node answers.)
+PROBE_DEV=bfprobe
+# Remove a probe device an interrupted probe left behind (e.g. the agent restarted
+# mid-probe by a self-update): it would keep handshaking with the same key and
+# fight the real tunnel for the server's session.
+clean_probe() {
+	ip link del "$PROBE_DEV" >/dev/null 2>&1
+	rm -f "$STATE_DIR/probe.key" "$STATE_DIR/probe.psk" "$STATE_DIR/probe.conf"
+	return 0
+}
+
+probe_node() {  # probe_node <node index> [seconds]
+	local conf priv pub psk ep hs t=0 ok=1 key="$STATE_DIR/probe.key" pskf="$STATE_DIR/probe.psk"
+	conf="$STATE_DIR/probe.conf"
+	jq -r ".nodes[$1].wgConfig // empty" "$RESP" >"$conf"
+	priv=$(wg_field "$conf" PrivateKey); pub=$(wg_field "$conf" PublicKey)
+	psk=$(wg_field "$conf" PresharedKey); ep=$(wg_field "$conf" Endpoint)
+	[ -n "$priv" ] && [ -n "$pub" ] && [ -n "$ep" ] || { rm -f "$conf"; return 1; }
+	ip link del "$PROBE_DEV" >/dev/null 2>&1
+	ip link add "$PROBE_DEV" type wireguard >/dev/null 2>&1 || { rm -f "$conf"; return 1; }
+	( umask 077; printf '%s\n' "$priv" >"$key"; [ -n "$psk" ] && printf '%s\n' "$psk" >"$pskf" )
+	if [ -n "$psk" ]; then
+		wg set "$PROBE_DEV" private-key "$key" peer "$pub" preshared-key "$pskf" endpoint "$ep" \
+			allowed-ips 0.0.0.0/32 persistent-keepalive 1 >/dev/null 2>&1
+	else
+		wg set "$PROBE_DEV" private-key "$key" peer "$pub" endpoint "$ep" \
+			allowed-ips 0.0.0.0/32 persistent-keepalive 1 >/dev/null 2>&1
+	fi && ip link set "$PROBE_DEV" up >/dev/null 2>&1 &&
+	while [ "$t" -lt "${2:-10}" ]; do
+		hs=$(wg show "$PROBE_DEV" latest-handshakes 2>/dev/null | awk -v k="$pub" '$1 == k {print $2}')
+		[ -n "$hs" ] && [ "$hs" != 0 ] && { ok=0; break; }
+		sleep 1; t=$((t + 1))
+	done
+	ip link del "$PROBE_DEV" >/dev/null 2>&1
+	rm -f "$key" "$pskf" "$conf"
+	[ "$ok" = 0 ] && node_report "$1" ok || node_report "$1" fail
+	return "$ok"
+}
+
+# Is the primary in its back-off window (recently probed and found dead)?
+primary_backed_off() {
+	local next fails id
+	[ -f "$PRIMARY_BACKOFF" ] && [ -s "$RESP" ] || return 1
+	read -r next fails id <"$PRIMARY_BACKOFF"
+	case "${next:-x}" in *[!0-9]*) return 1 ;; esac
+	[ "${id:-}" = "$(primary_id)" ] || return 1   # recorded for another primary
+	[ "$(date +%s)" -lt "$next" ]
+}
+
+primary_id() { jq -r '[.nodes[] | select(.role == "primary")][0].nodeId // empty' "$RESP" 2>/dev/null; }
+
+# Record another failed attempt to reach the primary and when to try next:
+# refresh_interval, doubling per failure, capped at PRIMARY_BACKOFF_MAX.
+primary_backoff() {  # primary_backoff <failures so far> <now>
+	local fails=$(($1 + 1)) delay interval i=1
+	interval=$(cfg_get refresh_interval); [ -n "$interval" ] || interval=300
+	delay=$interval
+	while [ "$i" -lt "$fails" ] && [ "$delay" -lt "$PRIMARY_BACKOFF_MAX" ]; do delay=$((delay * 2)); i=$((i + 1)); done
+	[ "$delay" -gt "$PRIMARY_BACKOFF_MAX" ] && delay=$PRIMARY_BACKOFF_MAX
+	echo "$(($2 + delay)) $fails $(primary_id)" >"$PRIMARY_BACKOFF"
+	log "primary not answering — staying on $(cat "$CURNODE" 2>/dev/null), next try in ${delay}s"
+}
+
+# On "auto", if we're healthy but not on the primary, check whether the primary is
+# back — with a side probe, so a dead primary costs no downtime — and only then
+# switch. If the switch itself fails, go straight back to the node we were on.
+# Either way, back off before the next check.
 maybe_return_primary() {
 	[ "$(cfg_get location)" = "auto" ] || return 0
-	local primary_idx cur primary_id
+	[ -s "$RESP" ] || return 0
+	healthy || return 0
+	local primary_idx cur pid now next fails id
 	primary_idx=$(jq -r '.nodes | to_entries | map(select(.value.role == "primary")) | .[0].key // empty' "$RESP")
 	[ -n "$primary_idx" ] || return 0
-	primary_id=$(jq -r ".nodes[$primary_idx].nodeId // empty" "$RESP")
+	pid=$(primary_id)
 	cur=$(cat "$CURNODE" 2>/dev/null)
-	[ "$cur" = "$primary_id" ] && return 0    # already on primary
+	[ "$cur" = "$pid" ] && { rm -f "$PRIMARY_BACKOFF"; return 0; }   # already on primary
+	now=$(date +%s)
+	next=0; fails=0; id=""
+	[ -f "$PRIMARY_BACKOFF" ] && read -r next fails id <"$PRIMARY_BACKOFF"
+	case "${next:-x}${fails:-x}" in *[!0-9]*) next=0; fails=0 ;; esac   # damaged file → start over
+	[ "${id:-}" = "$pid" ] || { next=0; fails=0; }                     # it was about another primary
+	[ "$now" -lt "$next" ] && return 0
+	if ! probe_node "$primary_idx"; then
+		primary_backoff "$fails" "$now"
+		return 0
+	fi
 	if bring_up "$primary_idx"; then
+		rm -f "$PRIMARY_BACKOFF"
 		log "returned to primary node"
-	fi   # if it fails, the current fallback tunnel is left in place
+		return 0
+	fi
+	primary_backoff "$fails" "$now"
+	restore_previous || log "could not restore the previous tunnel; reconnecting"
+}
+
+# Self-update health gate: can this (new) version reach the master within ~60s?
+# A dead tunnel left over from before the update would black-hole the master and
+# roll back a good update, so it's cleared first.
+health_gate() {
+	local i=0
+	if ! healthy && uci -q get "network.$(ifname)" >/dev/null 2>&1; then
+		teardown
+	fi
+	while [ "$i" -lt 12 ]; do
+		fetch_config >/dev/null 2>&1 && return 0
+		i=$((i + 1)); sleep 5
+	done
+	return 1
 }
 
 teardown() {
-	local iface; iface=$(ifname)
+	local iface i=0; iface=$(ifname)
 	ifdown "$iface" >/dev/null 2>&1
 	uci -q delete "network.$iface"
 	while uci -q delete "network.@wireguard_${iface}[0]"; do :; done
 	uci commit network
-	rm -f "$HASHFILE" "$CURNODE"
+	# ifdown is asynchronous; wait for the device (and its default route) to go, so
+	# the next master fetch doesn't still hit the black hole.
+	while ip link show "$iface" >/dev/null 2>&1 && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
+	rm -f "$HASHFILE" "$CURNODE" "$APPLIED" "$RXSTATE"
 }
 
 # ── status ──────────────────────────────────────────────────────
@@ -459,8 +727,42 @@ cmd_json() {
 
 # up/down just flip the enabled flag — the always-running agent reacts within a
 # cycle (connect or tear down). No procd restart, so the web UI stays alive.
+# `bifrost check` — can this router handshake with each spark, right now? The live
+# tunnel's node is judged by its health (probing it with the same key would steal
+# the session); every other node gets a side probe over the normal routing.
+cmd_check() {
+	local idx id name role ep cur res bad=0
+	if ! fetch_config; then
+		[ -s "$RESP" ] || { echo "no config — not registered, or the master is unreachable"; return 1; }
+		echo "master unreachable — checking the last known config"
+	fi
+	cur=$(cat "$CURNODE" 2>/dev/null)
+	for idx in $(jq -r '.nodes | to_entries | sort_by(.value.role != "primary") | .[].key' "$RESP"); do
+		id=$(jq -r ".nodes[$idx].nodeId" "$RESP")
+		name=$(jq -r ".nodes[$idx].name // .nodes[$idx].nodeId" "$RESP")
+		role=$(jq -r ".nodes[$idx].role // \"\"" "$RESP")
+		ep=$(jq -r ".nodes[$idx].wgConfig // empty" "$RESP" | sed -n 's/^Endpoint = //p')
+		if [ -n "$cur" ] && [ "$id" = "$cur" ]; then
+			if healthy; then res="ok (current tunnel)"; else res="FAIL (current tunnel not passing traffic)"; bad=1; fi
+		elif probe_node "$idx" 10; then
+			res=ok
+		else
+			res="FAIL — no handshake"; bad=1
+		fi
+		printf '%-20s %-10s %-24s %s\n' "$name" "$role" "$ep" "$res"
+	done
+	if [ "$bad" = 1 ]; then
+		echo
+		echo "No handshake means the spark never answered. Check, in the dashboard's device health:"
+		echo "  the endpoint is the spark site's public IP, UDP is open to it, and this router"
+		echo "  is listed as a client on that spark's WireGuard server."
+		return 1
+	fi
+	return 0
+}
+
 cmd_up() { cfg_set enabled 1; }
-cmd_down() { cfg_set enabled 0; }
+cmd_down() { cfg_set enabled 0; teardown; }   # immediate — a dead tunnel would keep black-holing WAN
 
 # ── config page on :80 under a LAN name (bifrost.lan) ───────────
 #
@@ -554,6 +856,15 @@ ui_cert_ensure() {
 	[ -s "$SSL_CRT" ] && [ -s "$SSL_KEY" ]
 }
 
+# Our TLS listener. Not 8443: GL.iNet's own uhttpd already listens there on some
+# models (GL-BE10000 firmware 4.8), so ours would crash-loop on EADDRINUSE.
+UI_TLS_PORT_DEFAULT=8943
+ui_tls_port() {
+	local p; p=$(cfg_get ui_https_port)
+	case "$p" in ''|*[!0-9]*) p=$UI_TLS_PORT_DEFAULT ;; esac   # unset or not a port number
+	echo "$p"
+}
+
 # Is HTTPS both wanted and possible?
 ui_https_on() {
 	[ "$(cfg_get ui_https)" = 0 ] && return 1
@@ -607,7 +918,7 @@ cmd_ui_setup() {
 	uci set firewall.bifrost_ui80.dest_ip="$alias"
 	uci set firewall.bifrost_ui80.dest_port='8099'
 
-	# HTTPS, same shape: alias:443 → alias:8443. GL.iNet's uhttpd wildcard-binds
+	# HTTPS, same shape: alias:443 → alias:$(ui_tls_port). GL.iNet's uhttpd wildcard-binds
 	# :443 too when its UI serves HTTPS, so a TLS listener on <alias>:443 would hit
 	# exactly the EADDRINUSE trap that :80 did. Redirect instead.
 	if [ "$(cfg_get ui_https)" != 0 ] && ui_cert_ensure "$alias" "$domain"; then
@@ -619,13 +930,13 @@ cmd_ui_setup() {
 		uci set firewall.bifrost_ui443.src_dip="$alias"
 		uci set firewall.bifrost_ui443.src_dport='443'
 		uci set firewall.bifrost_ui443.dest_ip="$alias"
-		uci set firewall.bifrost_ui443.dest_port='8443'
-		# The DNAT lands on :8443, so the input rule must allow that port.
+		uci set firewall.bifrost_ui443.dest_port="$(ui_tls_port)"
+		# The DNAT lands on the TLS port, so the input rule must allow that port.
 		uci set firewall.bifrost_ui_tls=rule
 		uci set firewall.bifrost_ui_tls.name='Bifrost-UI-TLS'
 		uci set firewall.bifrost_ui_tls.src='lan'
 		uci set firewall.bifrost_ui_tls.proto='tcp'
-		uci set firewall.bifrost_ui_tls.dest_port='8443'
+		uci set firewall.bifrost_ui_tls.dest_port="$(ui_tls_port)"
 		uci set firewall.bifrost_ui_tls.target='ACCEPT'
 	else
 		# No cert (no openssl/px5g on this firmware, or explicitly disabled) —
@@ -694,7 +1005,7 @@ cmd_ui_check() {
 	else
 		echo "https:     no cert — needs openssl or px5g (opkg install openssl-util)"
 	fi
-	echo "listening: $(netstat -ltn 2>/dev/null | awk '$4 ~ /:(8099|8443)$/ {printf "%s ", $4}')"
+	echo "listening: $(netstat -ltn 2>/dev/null | awk -v t=":$(ui_tls_port)" '$4 ~ /:8099$/ || substr($4, length($4) - length(t) + 1) == t {printf "%s ", $4}')"
 	echo "url:       $(ui_url)"
 }
 
@@ -716,6 +1027,9 @@ ui_url() {
 
 # ── entrypoint ──────────────────────────────────────────────────
 
+# The test harness sources this file for its functions only.
+[ "${BIFROST_SOURCED:-0}" = 1 ] && return 0
+
 case "${1:-}" in
 	bootstrap) bootstrap ;;
 	save-token) save_token "${2:-}" ;;
@@ -733,10 +1047,11 @@ case "${1:-}" in
 	unlock | safe-on) safe_on ;;
 	resume | safe-off) safe_off ;;
 	safe-status)
-		echo "safe mode: $([ "$(cfg_get safe_mode)" = 1 ] && echo ON || echo off)"
+		echo "safe mode: $([ "$(cfg_get safe_mode)" = 1 ] && echo "ON ($(r=$(cfg_get safe_reason); echo "${r:-manual}"))" || echo off)"
 		echo "watchdog:  $([ "$(cfg_get safe_watchdog)" = 0 ] && echo off || echo on) (after $(cfg_get safe_watchdog_fails 2>/dev/null || echo 12) failed connects)"
 		echo "whitelist: $(safe_hosts)"
 		;;
+	check) cmd_check ;;
 	up) cmd_up ;;
 	down) cmd_down ;;
 	status) cmd_status ;;
@@ -746,6 +1061,7 @@ case "${1:-}" in
 	ui-check) cmd_ui_check ;;
 	ui-url) ui_url ;;
 	run)
+		clean_probe   # a restart mid-probe (e.g. self-update) can leave one behind
 		# Health-gate a pending self-update: this (new) version must reach the master
 		# within the window, or we roll back to the backup and re-exec it. A totally
 		# broken new build that won't run at all can't self-heal here — procd just
@@ -753,12 +1069,7 @@ case "${1:-}" in
 		# control releases.
 		if [ -f "$PENDING" ]; then
 			log "self-update pending — health-gating the new version"
-			ok=0; i=0
-			while [ "$i" -lt 12 ]; do   # ~60s to prove it can reach the master
-				fetch_config >/dev/null 2>&1 && { ok=1; break; }
-				i=$((i + 1)); sleep 5
-			done
-			if [ "$ok" = "1" ]; then
+			if health_gate; then
 				rm -f "$PENDING"   # commit; keep the backup for a manual Revert
 				log "self-update healthy — committed"
 			else
@@ -786,6 +1097,11 @@ case "${1:-}" in
 					safe_fw_build
 					fetch_config >/dev/null 2>&1
 				fi
+				# Watchdog-engaged: keep looking for a node every minute and come
+				# back on our own — the router must never give up on the VPN.
+				if [ $((tick % SAFE_RECOVER_TICKS)) -eq 0 ] && safe_recover; then
+					fail=0; tick=0; continue
+				fi
 				tick=$((tick + 1)); sleep 5; continue
 			fi
 
@@ -796,8 +1112,8 @@ case "${1:-}" in
 				if healthy; then
 					fail=0
 					if [ $((tick % every)) -eq 0 ]; then
-						fetch_config && maybe_return_primary
 						connect >/dev/null 2>&1 || true   # refresh; reapply only if changed
+						maybe_return_primary              # backs off while the primary is dead
 					fi
 				else
 					log "tunnel down — connecting (failover)"
@@ -813,7 +1129,8 @@ case "${1:-}" in
 						thr=$(cfg_get safe_watchdog_fails); [ -n "$thr" ] || thr=12
 						if [ "$wd" = "1" ] && [ "$fail" -ge "$thr" ]; then
 							log "sustained tunnel failure — engaging safe mode (anti-brick)"
-							safe_on
+							safe_on watchdog
+							fail=0
 						fi
 					fi
 				fi
@@ -829,7 +1146,7 @@ case "${1:-}" in
 		done
 		;;
 	*)
-		echo "Usage: bifrost {bootstrap|save-token <t>|poll|up|down|status|json|refresh|unlock|resume|safe-status|run}" >&2
+		echo "Usage: bifrost {bootstrap|save-token <t>|poll|up|down|status|check|json|refresh|unlock|resume|safe-status|run}" >&2
 		exit 1
 		;;
 esac

@@ -64,6 +64,7 @@ or the router polling), and the tunnel comes up. No token or URL to copy by hand
 | `bifrost poll`          | check the master for a claimed code, save the token        |
 | `bifrost up` / `down`   | enable / disable the tunnel                                |
 | `bifrost status`        | tunnel state, last handshake, `wg` details                 |
+| `bifrost check`         | try a handshake with every spark, one line each (also feeds the dashboard's health check) |
 | `bifrost json`          | machine-readable status (used by the config page)          |
 | `bifrost refresh`       | re-fetch config from the master, reconnect if it changed   |
 | `bifrost killswitch`    | (re)apply the kill switch from config                      |
@@ -105,9 +106,12 @@ domain resolve everywhere, with no extra daemon.
 ### HTTPS (`option ui_https`, default on)
 
 `https://bifrost.lan/` also works, via the same trick one port up: a TLS uhttpd on
-`:8443`, with `alias:443 → alias:8443` redirected. (GL.iNet's uhttpd wildcard-binds
+`:8943`, with `alias:443 → alias:8943` redirected. (GL.iNet's uhttpd wildcard-binds
 `:443` too whenever its UI serves HTTPS, so a listener on `<alias>:443` would hit
-the same `EADDRINUSE` wall as `:80`.)
+the same `EADDRINUSE` wall as `:80`.) It is not `:8443` because GL.iNet's own uhttpd
+already listens there on some models (e.g. the GL-BE10000); override the port with
+`option ui_https_port` if yours clashes too (then run `bifrost ui-setup` and
+`/etc/init.d/bifrost restart`).
 
 **The certificate is self-signed, and browsers will warn.** This is not a bug and
 cannot be fixed: no CA can issue a trusted certificate for `bifrost.lan`, because
@@ -135,6 +139,8 @@ neither is on the firmware, HTTPS is skipped and the page stays on HTTP;
 | `route_lan`        | `1`       | Route LAN clients through the VPN (firewall zone + masq)      |
 | `refresh_interval` | `300`     | Seconds between config refreshes / failover checks            |
 | `ifname`           | `bifrost` | WireGuard interface name created on the router                |
+| `ui_https_port`    | `8943`    | Port of the config page's TLS listener (see HTTPS above)      |
+| `probe_ip`         | `1.1.1.1` | Pinged through the tunnel to confirm it's alive when idle     |
 
 ## Building
 

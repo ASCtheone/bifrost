@@ -10,6 +10,14 @@
         "cwd": "apps/openwrt-client"
       }
     },
+    "test": {
+      "executor": "nx:run-commands",
+      "description": "Agent failover tests against stubbed router commands (POSIX sh).",
+      "options": {
+        "command": "sh test/agent_test.sh",
+        "cwd": "apps/openwrt-client"
+      }
+    },
     "lint": {
       "executor": "nx:run-commands",
       "description": "POSIX-shell syntax check of the client scripts.",
